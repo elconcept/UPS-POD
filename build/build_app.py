@@ -17,7 +17,7 @@ def main():
     env['PLAYWRIGHT_BROWSERS_PATH'] = str(BROWSERS)
     env['UPS_POD_PW_BROWSERS'] = str(BROWSERS)
     env['PLAYWRIGHT_SKIP_BROWSER_GC'] = '1'
-    print('Pobieranie Chromium headless shell (włączane do binarki)...', flush=True)
+    print('Downloading bundled Chromium headless shell...', flush=True)
     subprocess.run([sys.executable, '-m', 'playwright', 'install', '--only-shell', 'chromium'],
                    env=env, check=True, cwd=ROOT)
     print('Pakowanie PyInstaller dla: ' + sys.platform, flush=True)

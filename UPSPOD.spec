@@ -21,8 +21,9 @@ analysis = Analysis(
     [str(ROOT / 'UPS_POD' / 'gui.py')],
     pathex=[str(ROOT / 'UPS_POD')],
     binaries=pw_binaries,
-    datas=pw_datas + [(str(PW_BROWSERS), 'pw-browsers'),
-                      (str(ROOT / 'UPS_POD' / 'ustawienia.ini'), '.')],
+    # Keep Chromium binaries OUT of Analysis: on macOS, auto-classification
+    # rewrites libEGL.dylib with install_name_tool and the Mach-O header overflows.
+    datas=pw_datas + [(str(ROOT / 'UPS_POD' / 'ustawienia.ini'), '.')],
     hiddenimports=pw_hidden + ['openpyxl', 'requests', 'playwright.sync_api'],
     hookspath=[],
     hooksconfig={},
@@ -47,6 +48,9 @@ coll = COLLECT(
     exe,
     analysis.binaries,
     analysis.datas,
+    # Bundle the entire browser payload as DATA, preserving the shipped Mach-O
+    # images untouched. Browser is a subprocess, not a Python extension module.
+    Tree(str(PW_BROWSERS), prefix='pw-browsers', typecode='DATA'),
     strip=False,
     upx=False,
     name='UPSPOD',

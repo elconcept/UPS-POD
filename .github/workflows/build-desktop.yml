@@ -71,6 +71,16 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: ./dist/UPSPOD.app/Contents/MacOS/UPSPOD harmonogram-status
+      - name: Smoke test Windows bundled Chromium PDF
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./dist/UPSPOD/UPSPOD.exe selftest-pdf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke test macOS bundled Chromium PDF
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./dist/UPSPOD.app/Contents/MacOS/UPSPOD selftest-pdf
       - name: ZIP Windows bundle (keep entire folder)
         if: runner.os == 'Windows'
         shell: pwsh

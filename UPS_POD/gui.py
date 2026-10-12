@@ -26,6 +26,28 @@ def przygotuj_srodowisko():
 def main():
     przygotuj_srodowisko()
     import ups_pod as core
+    # Offline smoke test invoked on every OS against the frozen release binary.
+    # It verifies that Chromium is present, executable, and able to generate PDF.
+    if len(sys.argv) > 1 and sys.argv[1] == 'selftest-pdf':
+        import tempfile
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / 'upspod-smoke.pdf'
+                converter = core.KonwerterPDF()
+                try:
+                    converter.html_na_pdf(
+                        '<!doctype html><html><body>UPS POD PDF smoke test</body></html>',
+                        target,
+                    )
+                    if target.read_bytes()[:4] != b'%PDF':
+                        raise RuntimeError('PDF signature missing')
+                finally:
+                    converter.zamknij()
+            return 0
+        except Exception as exc:
+            if sys.stderr is not None:
+                print('PDF smoke test failed: ' + str(exc), file=sys.stderr)
+            return 2
     komendy_cli = {'start', 'menu', 'run', 'check', 'test', 'klucze',
                    'harmonogram-wlacz', 'harmonogram-wylacz', 'harmonogram-status'}
     if len(sys.argv) > 1 and sys.argv[1] in komendy_cli:
