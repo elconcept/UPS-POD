@@ -1,0 +1,24 @@
+.venv/
+.venv-build/
+__pycache__/
+*.pyc
+build/pyinstaller/
+build/pw-browsers/
+dist/
+UPS_POD/.venv/
+UPS_POD/dane/
+UPS_POD/POD/
+UPS_POD/apka.xlsx
+*.zip
+.DS_Store
+
+# Never commit authentication, live shipment history, temp files
+**/klucze_ups.json
+**/.env
+**/.env.*
+**/*_odpowiedz_ups.json
+**/wyniki_*.jsonl
+**/raporty/
+**/kopie_arkusza/
+**/logi/
+**/POD/

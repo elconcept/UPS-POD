@@ -1,0 +1,58 @@
+UPS POD – szybki start (Windows i Mac)
+=====================================
+
+1. KLUCZE UPS API (raz)
+   developer.ups.com -> zaloguj się kontem ups.com -> My Apps -> Add Apps
+   -> wybierz swój numer konta UPS -> zaznacz produkt "Tracking" -> Save
+   -> skopiuj Client ID i Client Secret.
+
+2. PYTHON 3 (raz)
+   https://www.python.org/downloads/ -> zainstaluj.
+   Windows: w pierwszym oknie instalatora zaznacz "Add python.exe to PATH".
+
+3. FOLDER APLIKACJI
+   Mac:     rozpakuj do folderu domowego, tak aby powstał ~/UPS_POD
+            (NIE na Biurko, do Dokumentów ani Pobranych – macOS blokuje tam
+            programy działające w tle i harmonogram by nie zadziałał).
+   Windows: przed rozpakowaniem kliknij zip prawym -> Właściwości -> zaznacz
+            "Odblokuj" -> OK. Rozpakuj np. do C:\Users\<Twoja nazwa>\UPS_POD
+
+4. URUCHOMIENIE (pierwszy raz instaluje biblioteki, 2–5 min, wymaga internetu)
+   Windows: dwuklik START_WINDOWS.bat
+   Mac:     Terminal -> wpisz:  bash ~/UPS_POD/START_MAC.command  -> Enter
+
+5. MENU – kolejno:
+   1 = wpisz klucze UPS (aplikacja sprawdzi logowanie)
+   2 = test jednego DORĘCZONEGO trackingu – pokaże, czy UPS API zwraca
+       dokument POD dla Twojego konta (to trzeba sprawdzić na początku)
+   3 = uruchom teraz (CHECK + statusy + PDF)
+   5 = włącz harmonogram (wtorek i czwartek 15:00)
+
+NA CO DZIEŃ
+   Dopisujesz wiersze w arkuszu DATA (A data, B Shipment ID, C trackingi
+   rozdzielone ";"). Resztę robi aplikacja:
+   - CHECK: jeden tracking w wierszu, bez powtórzeń, status (D), nazwa
+     pliku (E), komentarz (F);
+   - PDF: POD/<DATA>-<Shipment ID>/<nazwa z kolumny E>.pdf
+   - niedoręczone sprawdza ponownie przy każdym uruchomieniu.
+   Jeśli o 15:00 plik Excel jest otwarty: PDF-y i tak się pobiorą, wyniki
+   trafią do dane/raporty/*.csv, a arkusz uzupełni się przy następnym
+   uruchomieniu. Kolumn A–F w CHECK nie edytuj ręcznie (są odtwarzane).
+
+PLIKI
+   ups_pod.py        aplikacja
+   ustawienia.ini    ścieżki, dni i godzina harmonogramu
+   apka.xlsx         arkusze DATA i CHECK
+   dane/             klucze (klucze_ups.json – nie udostępniaj), logi,
+                     kopie arkusza, raporty
+
+PEŁNA INSTRUKCJA (krok po kroku, z objaśnieniem komunikatów):
+   https://claude.ai/code/artifact/246cfae1-55b1-4e6c-80a4-0d70e915033f
+
+Nowa wersja Desktop:
+---------------------
+W folderze nadrzednym projektu znajduja sie: INSTRUKCJA_DESKTOP.md,
+BUILD_WINDOWS.bat, BUILD_MAC.command, UPSPOD.spec, requirements-desktop.txt
+oraz GitHub Actions .github/workflows/build-desktop.yml.
+GUI uruchamiane ze zrodel: python gui.py (wymagany PySide6).
+Po zbudowaniu: Windows UPSPOD.exe / macOS UPSPOD.app (bez Pythona).

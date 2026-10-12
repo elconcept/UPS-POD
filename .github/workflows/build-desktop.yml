@@ -1,0 +1,132 @@
+name: UPS POD — build and release on every commit
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Only the release job can write to the repository.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Regression tests (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r UPS_POD/requirements.txt
+          python -m playwright install --with-deps chromium
+          sudo apt-get update && sudo apt-get install -y poppler-utils
+      - name: Test Qt integration without GUI
+        run: python -m unittest -v testy.test_desktop_integration
+      - name: End-to-end UPS API simulator tests
+        run: python testy/test_e2e.py
+
+  build:
+    needs: verify
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            name: Windows x64
+            artifact: UPSPOD-Windows-x64
+          - os: macos-15
+            name: macOS Apple Silicon
+            artifact: UPSPOD-macOS-arm64
+          - os: macos-15-intel
+            name: macOS Intel
+            artifact: UPSPOD-macOS-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-desktop.txt
+      - name: Build with bundled Chromium (Qt + PyInstaller)
+        run: python build/build_app.py
+      - name: Smoke test Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./dist/UPSPOD/UPSPOD.exe harmonogram-status
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke test macOS CLI
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./dist/UPSPOD.app/Contents/MacOS/UPSPOD harmonogram-status
+      - name: ZIP Windows bundle (keep entire folder)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path 'dist/UPSPOD' -DestinationPath '${{ matrix.artifact }}.zip'
+      - name: ZIP macOS .app (keep permissions and symlinks)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ditto -c -k --keepParent dist/UPSPOD.app '${{ matrix.artifact }}.zip'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release (all platforms)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download all three binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: UPSPOD-*
+          path: release-assets
+          merge-multiple: true
+      - name: Check all platforms + generate SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          for file in UPSPOD-Windows-x64.zip UPSPOD-macOS-arm64.zip UPSPOD-macOS-x64.zip; do
+            test -s "$file"
+          done
+          sha256sum UPSPOD-Windows-x64.zip UPSPOD-macOS-arm64.zip UPSPOD-macOS-x64.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Publish one Release per pushed commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="desktop-${COMMIT_SHA}"
+          short="${COMMIT_SHA:0:12}"
+          # Existing Release is immutable/idempotent: do not overwrite published assets.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; skipping duplicate publication."
+          else
+            gh release create "$tag" release-assets/*.zip release-assets/SHA256SUMS.txt \
+              --target "$COMMIT_SHA" \
+              --title "UPS POD Desktop ${short}" \
+              --notes "Automatyczny build commita ${COMMIT_SHA}. Windows x64, macOS Apple Silicon, macOS Intel. Aplikacje nie są podpisane cyfrowo. Sprawdź SHA256SUMS.txt."
+          fi
+          echo "Release: https://github.com/${GH_REPO}/releases/tag/${tag}" >> "$GITHUB_STEP_SUMMARY"
