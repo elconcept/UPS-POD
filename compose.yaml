@@ -2,13 +2,13 @@ name: ups-pod
 services:
   init:
     image: busybox:1.37
-    command: ["sh","-c","mkdir -p /data/POD /data/dane /data/dane/logi && chown -R 10001:10001 /data"]
+    command: ["sh","-c","mkdir -p /data/POD /data/dane /data/dane/logi && chown -R 10001:10001 /data && chmod -R u+rwX,g+rwX /data"]
     volumes:
       - /volume2/docker/ups-pod/data:/data
     restart: "no"
     network_mode: none
     cap_drop: [ALL]
-    cap_add: [CHOWN]
+    cap_add: [CHOWN, FOWNER]
     security_opt: ["no-new-privileges:true"]
   web:
     build:
