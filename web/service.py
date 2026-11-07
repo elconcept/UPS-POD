@@ -278,10 +278,49 @@ def available_months() -> list[str]:
     return sorted({*months, current_month()}, reverse=True)
 
 
+# Client-visible fields are explicitly mapped to fixed SQL expressions.
+# Never interpolate user-supplied names or directions into SQL.
+LIST_COLUMNS = {
+    "fba": "COALESCE(NULLIF(shipment_id,''),'Nieprzypisany')",
+    "tracking": "tracking",
+    "ship_date": "COALESCE(NULLIF(ship_date,''),'—')",
+    "delivery_date": "CASE WHEN LENGTH(delivery_date)=8 THEN "
+        "(CASE WHEN delivery_date_type='SDD' THEN 'Plan ' ELSE '' END)||"
+        "SUBSTR(delivery_date,1,4)||'-'||SUBSTR(delivery_date,5,2)||'-'||"
+        "SUBSTR(delivery_date,7,2) ELSE '—' END",
+     "weight": "CASE WHEN weight_value='' THEN '—' ELSE "
+        "weight_value||' '||CASE weight_unit WHEN 'KGS' THEN 'kg' "
+        "WHEN 'LBS' THEN 'lb' ELSE weight_unit END END",
+    "ups_status": "COALESCE(NULLIF(ups_status,''),'Bez statusu')",
+    "queue": "CASE WHEN state='ready' THEN 'POD pobrany' "
+         "WHEN state='processing' THEN 'Pobieranie…' "
+        "WHEN state='queued' THEN 'W kolejce' "
+        "WHEN error='Przesyłka jeszcze niedoręczona.' OR "
+        "LOWER(ups_status) LIKE '%w drodze%' THEN 'W drodze' "
+         "ELSE 'Brak POD / ponowienie' END",
+    "document": "CASE WHEN state='ready' THEN 'PDF' "
+        "WHEN state='retry' AND NOT "
+        "(error='Przesyłka jeszcze niedoręczona.' OR "
+        "LOWER(ups_status) LIKE '%w drodze%') THEN 'Błąd' "
+         "ELSE 'Oczekuje' END",
+}
+SORT_COLUMNS = dict(LIST_COLUMNS, weight="CAST(NULLIF(weight_value,'') AS REAL)")
+
+
 def list_numbers(search: str = "", scope: str = "all", limit: int = 200,
-                 offset: int = 0, month: str = "all") -> dict:
+                 offset: int = 0, month: str = "all", sort_by: str = "ship_date",
+                 sort_dir: str = "desc", column_filters: dict[str, str] | None = None) -> dict:
+    """Page, filter and sort the complete SQLite dataset, not just the visible page."""
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
+    if sort_by not in SORT_COLUMNS or sort_dir not in {"asc", "desc"}:
+        raise ValueError("Nieprawidłowe sortowanie.")
+    if column_filters is not None and (
+        not isinstance(column_filters, dict)
+        or set(column_filters).difference(LIST_COLUMNS)
+        or any(not isinstance(v, str) or len(v) > 100 for v in column_filters.values())
+    ):
+        raise ValueError("Nieprawidłowe filtry kolumn.")
     where = ["1=1"]
     params: list[str] = []
     if scope == "ready":
@@ -298,7 +337,15 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 200,
     if search:
         where.append("(tracking LIKE ? OR shipment_id LIKE ? OR description LIKE ? OR error LIKE ?)")
         params.extend([f"%{search[:100]}%"] * 4)
+    for column, value in (column_filters or {}).items():
+        text = value.strip()
+        if text:
+            where.append(f"INSTR(LOWER({LIST_COLUMNS[column]}), LOWER(?)) > 0")
+            params.append(text)
     condition = " AND ".join(where)
+    order_field = SORT_COLUMNS[sort_by]
+    order = (f"({order_field} IS NULL OR CAST({order_field} AS TEXT)='') ASC, "
+             f"{order_field} {sort_dir.upper()}, created_at DESC, tracking ASC")
     with connection() as db:
         total = db.execute(f"SELECT COUNT(*) FROM shipments WHERE {condition}", params).fetchone()[0]
         rows = db.execute(
@@ -307,14 +354,11 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 200,
             "ship_date_source,ups_status,ups_status_code,weight_value,weight_unit,"
             "delivery_time_type,delivery_time_start,delivery_time_end,delivery_date,"
             "delivery_date_type,received_by,photo_filename FROM shipments WHERE " + condition +
-            " ORDER BY (ship_date='') ASC,ship_date DESC,created_at DESC,tracking ASC "
-            "LIMIT ? OFFSET ?",
+            " ORDER BY " + order + " LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
     return {"total": total, "rows": [dict(r) for r in rows],
             "months": available_months()}
-
-
 
 
 def claim_next() -> str | None:

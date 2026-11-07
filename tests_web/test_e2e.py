@@ -62,6 +62,7 @@ def test_real_ups_browser_worker_pdf_zip_persistence(application):
             base = f"http://127.0.0.1:{server.server_port}"
             page.goto(base)
             document_id = page.evaluate("window.documentMarker = Math.random()")
+            page.locator("#intake-toggle").click()
             page.locator("#trackings").fill(f'Excel: "{number}"\n{number.lower()}')
             page.locator("#add-btn").click()
             expect(page.locator("#count-total")).to_have_text("1")
@@ -421,8 +422,11 @@ def test_browser_shift_checkbox_bulk_fba_branding_and_status_pills(application):
             page.locator("#rows input[type=checkbox]").nth(5).click(modifiers=["Shift"])
             expect(page.locator("#rows input[type=checkbox]:checked")).to_have_count(6)
             expect(page.locator("#fba-selected")).to_contain_text("(6)")
-            page.on("dialog", lambda dialog: dialog.accept("FBA1234567"))
             page.locator("#fba-selected").click()
+            expect(page.locator("#fba-dialog")).to_be_visible()
+            page.locator("#fba-dialog-id").fill("FBA1234567")
+            page.locator("#fba-save").click()
+            expect(page.locator("#fba-dialog")).to_be_hidden()
             expect(page.locator("#rows .fba-id")).to_have_count(6)
             with service.connection() as db:
                 assert db.execute("SELECT count(*) FROM shipments WHERE shipment_id=?",
@@ -557,7 +561,9 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
             page = browser.new_page(viewport={"width": 920, "height": 720})
             page.goto(f"http://127.0.0.1:{server.server_port}")
             expect(page.locator("#rows tr")).to_have_count(3)
-            headings = page.locator("#shipments-panel thead th").all_text_contents()
+            headings = page.locator(
+                "#shipments-table thead tr:first-child .sort-header"
+            ).evaluate_all("(nodes) => nodes.map((n) => n.firstChild.textContent)")
             assert headings == [
                 "Shipment ID Amazon FBA", "Numer UPS", "Data nadania",
                 "Data doręczenia", "Waga", "Status UPS", "Stan kolejki", "Dokument",
@@ -575,13 +581,14 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
             expect(page.locator(".ups-tooltip")).to_contain_text("Kod UPS: X")
             assert page.locator(f'#rows tr[data-tracking="{ready}"] .document-bubble').inner_text() == "↓ PDF"
 
-            page.locator("#intake-toggle").click()
-            expect(page.locator("#intake-content")).to_be_hidden()
-            assert page.evaluate('document.cookie.includes("ups_pod_intake_collapsed=1")')
-            page.reload()
             expect(page.locator("#intake-content")).to_be_hidden()
             page.locator("#intake-toggle").click()
             expect(page.locator("#intake-content")).to_be_visible()
+            assert page.evaluate('document.cookie.includes("ups_pod_intake_collapsed=0")')
+            page.reload()
+            expect(page.locator("#intake-content")).to_be_visible()
+            page.locator("#intake-toggle").click()
+            expect(page.locator("#intake-content")).to_be_hidden()
 
             page.locator("#month-filter").select_option("all")
             page.locator("#query").fill("1Z")
@@ -615,6 +622,137 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
             expect(page.locator("#refresh-status")).to_contain_text("HTTP 502")
             expect(page.locator("#notice")).to_be_hidden()
             assert page.locator("#rows tr").count() == 2
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_server_side_filter_sort_all_rows_and_column_whitelist(application):
+    import service
+
+    entries = [f"1Z{i:016d}" for i in range(250)]
+    service.add_numbers(" ".join(entries))
+    with service.connection() as db:
+        db.execute(
+            "UPDATE shipments SET shipment_id=?,ship_date=?,weight_value=?,weight_unit=?,"
+            " ups_status=?,delivery_date=?,delivery_date_type=? WHERE tracking=?",
+            ("FBA999LONGID", "2026-11-02", "23.50", "KGS", "Wyjątek w doręczeniu",
+             "20261101", "SDD", entries[234]),
+        )
+        db.execute(
+            "UPDATE shipments SET shipment_id=?,ship_date=?,weight_value=?,weight_unit=?,"
+            " ups_status=?,delivery_date=?,delivery_date_type=? WHERE tracking=?",
+            ("FBA000111", "2026-11-03", "5.00", "KGS", "W drodze",
+             "20261108", "SDD", entries[235]),
+        )
+    assert service.list_numbers(limit=200)["total"] == 250
+    match = service.list_numbers(column_filters={"fba": "999long"}, limit=10)
+    assert match["total"] == 1
+    assert match["rows"][0]["tracking"] == entries[234]
+    for key, needle in [
+        ("tracking", entries[234]), ("ship_date", "2026-11-02"),
+        ("delivery_date", "2026-11-01"), ("weight", "23.50 kg"),
+        ("ups_status", "wyjątek"),
+    ]:
+        filtered = service.list_numbers(column_filters={key: needle})
+        assert entries[234] in {r["tracking"] for r in filtered["rows"]}, key
+    assert service.list_numbers(column_filters={"fba": "999", "weight": "5.00"})["total"] == 0
+    assert service.list_numbers(column_filters={"queue": "W kolejce"})["total"] == 250
+    assert service.list_numbers(column_filters={"document": "Oczekuje"})["total"] == 250
+    ascending = service.list_numbers(sort_by="weight", sort_dir="asc")
+    weights = [r["weight_value"] for r in ascending["rows"] if r["weight_value"]]
+    assert weights == ["5.00", "23.50"]
+    descending = service.list_numbers(sort_by="weight", sort_dir="desc")
+    weights = [r["weight_value"] for r in descending["rows"] if r["weight_value"]]
+    assert weights == ["23.50", "5.00"]
+    with pytest.raises(ValueError, match="sortowanie"):
+        service.list_numbers(sort_by="tracking; DROP TABLE shipments")
+    with pytest.raises(ValueError, match="filtry"):
+        service.list_numbers(column_filters={"track|DROP": "abc"})
+
+    with application.test_client() as client:
+        assert client.get("/api/shipments?sort=weight&direction=asc").status_code == 200
+        api = client.get("/api/shipments?f_fba=999&f_weight=23.5")
+        assert api.status_code == 200 and api.json["total"] == 1
+        assert not {"pod_path", "received_by", "photo_filename", "delivered_at"} & set(api.json["rows"][0])
+        assert client.get("/api/shipments?sort=DROP").status_code == 400
+
+
+def test_browser_reorder_sort_filter_and_ups_case_draft(application):
+    import service
+
+    a, b, c = "1Z004R316807294692", "1Z004R316805636772", "1Z004R316836426182"
+    service.add_numbers(" ".join((a, b, c)))
+    with service.connection() as db:
+        db.execute(
+            "UPDATE shipments SET shipment_id='FBAONE',weight_value='22.00',"
+            "weight_unit='KGS',ups_status='W drodze',"
+            "delivery_date='20200101',delivery_date_type='SDD' WHERE tracking=?",
+            (a,),
+        )
+        db.execute(
+            "UPDATE shipments SET shipment_id='FBATWO',weight_value='8.00',"
+            "weight_unit='KGS' WHERE tracking=?",
+            (b,),
+        )
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page(viewport={"width": 1460, "height": 900})
+            page.goto(f"http://127.0.0.1:{server.server_port}")
+            expect(page.locator("#rows tr")).to_have_count(3)
+            header = page.locator("#shipments-table thead tr:first-child")
+            page.locator('.column-header[data-col="weight"] .sort-header').click()
+            expect(page.locator('#rows tr').first).to_have_attribute("data-tracking", b)
+            page.locator('.column-header[data-col="weight"] .sort-header').click()
+            expect(page.locator('#rows tr').first).to_have_attribute("data-tracking", a)
+
+            page.locator('.column-header[data-col="weight"] .column-grip').drag_to(
+                page.locator('.column-header[data-col="tracking"] .sort-header'))
+            expect(header.locator("th").nth(1)).to_have_attribute("data-col", "weight")
+            expect(page.locator("#rows tr").first.locator("td").nth(1)).to_have_attribute(
+                "data-col", "weight")
+            assert "weight" in page.evaluate('document.cookie')
+            # Accessible reorder without a mouse, from the current position.
+            page.locator('.column-header[data-col="fba"] .column-grip').focus()
+            page.keyboard.press("Alt+ArrowRight")
+            expect(header.locator("th").nth(0)).to_have_attribute("data-col", "weight")
+
+            page.locator('.column-filter[data-col="fba"]').fill("FBATWO")
+            expect(page.locator("#rows tr")).to_have_count(1)
+            expect(page.locator("#rows tr").first).to_have_attribute("data-tracking", b)
+            page.reload()
+            expect(header.locator("th").nth(0)).to_have_attribute("data-col", "weight")
+            expect(header.locator("th").nth(1)).to_have_attribute("data-col", "fba")
+            expect(page.locator('.column-filter[data-col="fba"]')).to_have_value("FBATWO")
+            expect(page.locator("#rows tr")).to_have_count(1)
+            page.locator("#clear-column-filters").click()
+            expect(page.locator("#rows tr")).to_have_count(3)
+
+            page.locator(f'#rows tr[data-tracking="{a}"] .inline-edit').click()
+            expect(page.locator("#fba-dialog")).to_be_visible()
+            page.locator("#fba-dialog-id").fill("FBANEWID")
+            page.locator("#fba-save").click()
+            expect(page.locator("#fba-dialog-error")).to_contain_text("Zaznacz zgodę")
+            page.locator("#fba-replace").check()
+            page.locator("#fba-save").click()
+            expect(page.locator("#fba-dialog")).to_be_hidden()
+            expect(page.locator(f'#rows tr[data-tracking="{a}"] .fba-id')).to_have_text("FBANEWID")
+
+            page.locator(f'#rows tr[data-tracking="{a}"] .support-case').click()
+            expect(page.locator("#ups-case-dialog")).to_be_visible()
+            page.locator("#ups-case-form button[type=submit]").click()
+            expect(page.locator("#ups-case-error")).to_contain_text("Podaj źródło")
+            page.locator("#ups-evidence").fill("Potwierdzenie od odbiorcy, 2026-11-05")
+            page.locator("#ups-confirmation").check()
+            page.locator("#ups-case-form button[type=submit]").click()
+            expect(page.locator("#ups-case-draft")).to_have_value(__import__("re").compile(a))
+            expect(page.locator("#ups-case-draft")).to_have_value(__import__("re").compile("korektę danych"))
+            assert "upsemail/input?loc=pl_PL" in page.locator("#ups-official-form").get_attribute("href")
             browser.close()
     finally:
         server.shutdown()

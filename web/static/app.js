@@ -25,7 +25,209 @@ const savedMonth = getCookie("ups_pod_month");
 let activeMonth = savedMonth === "all" || /^\d{4}-(0[1-9]|1[0-2])$/.test(savedMonth)
   ? savedMonth : monthParts.year + "-" + monthParts.month;
 const PAGE_SIZE = 200;
+const COLUMN_KEYS = [
+  "fba", "tracking", "ship_date", "delivery_date", "weight", "ups_status", "queue", "document"
+];
+const columnLabels = {
+  fba: "Shipment ID Amazon FBA", tracking: "Numer UPS", ship_date: "Data nadania",
+  delivery_date: "Data doręczenia", weight: "Waga", ups_status: "Status UPS",
+  queue: "Stan kolejki", document: "Dokument"
+};
+function validateColumnOrder(value) {
+  const parts = value.split(",");
+  return parts.length === COLUMN_KEYS.length
+    && new Set(parts).size === COLUMN_KEYS.length
+    && parts.every((key) => COLUMN_KEYS.includes(key));
+}
+const savedOrder = getCookie("ups_pod_column_order");
+let columnOrder = validateColumnOrder(savedOrder) ? savedOrder.split(",") : [...COLUMN_KEYS];
+let sortBy = COLUMN_KEYS.includes(getCookie("ups_pod_sort"))
+  ? getCookie("ups_pod_sort") : "ship_date";
+let sortDirection = ["asc", "desc"].includes(getCookie("ups_pod_sort_direction"))
+  ? getCookie("ups_pod_sort_direction") : "desc";
+let columnFilters = {};
+try {
+  const stored = JSON.parse(getCookie("ups_pod_column_filters") || "{}");
+  if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+    for (const key of COLUMN_KEYS) {
+      if (typeof stored[key] === "string") columnFilters[key] = stored[key].slice(0, 100);
+    }
+  }
+} catch { columnFilters = {}; }
+let refreshSerial = 0;
 const $ = (id) => document.getElementById(id);
+
+function saveColumnPrefs() {
+  saveCookie("ups_pod_column_order", columnOrder.join(","));
+  saveCookie("ups_pod_sort", sortBy);
+  saveCookie("ups_pod_sort_direction", sortDirection);
+}
+function applyColumnOrder() {
+  const table = $("shipments-table");
+  const head = table.tHead.rows[0];
+  const filters = table.tHead.rows[1];
+  for (const key of columnOrder) {
+    head.append(head.querySelector('[data-col="' + key + '"]'));
+    filters.append(filters.querySelector('[data-col="' + key + '"]'));
+  }
+  for (const row of table.tBodies[0].rows) {
+    if (row.cells.length !== COLUMN_KEYS.length) continue;
+    for (const key of columnOrder)
+      row.append(row.querySelector('[data-col="' + key + '"]'));
+  }
+  for (const th of head.cells) {
+    const key = th.dataset.col;
+    th.setAttribute("aria-sort", key !== sortBy ? "none"
+      : sortDirection === "asc" ? "ascending" : "descending");
+    const direction = th.querySelector(".sort-indicator");
+    direction.textContent = key === sortBy ? (sortDirection === "asc" ? "↑" : "↓") : "↕";
+  }
+}
+function moveColumn(dragged, target) {
+  if (!COLUMN_KEYS.includes(dragged) || !COLUMN_KEYS.includes(target) || dragged === target) return;
+  const next = columnOrder.filter((key) => key !== dragged);
+  next.splice(next.indexOf(target), 0, dragged);
+  columnOrder = next;
+  saveColumnPrefs();
+  applyColumnOrder();
+}
+function initColumns() {
+  const header = $("shipments-table").tHead.rows[0];
+  const filterRow = document.createElement("tr");
+  filterRow.className = "column-filters";
+  filterRow.setAttribute("aria-label", "Filtry poszczególnych kolumn");
+  let dragging = "";
+  [...header.cells].forEach((th, index) => {
+    const key = COLUMN_KEYS[index];
+    th.dataset.col = key;
+    th.classList.add("column-header");
+    const check = key === "fba" ? $("select-page") : null;
+    th.replaceChildren();
+    if (check) {
+      check.title = "Zaznacz wszystkie przesyłki na bieżącej stronie";
+      th.append(check);
+    }
+    const sort = document.createElement("button");
+    sort.type = "button";
+    sort.className = "sort-header";
+    sort.setAttribute("aria-label", "Sortuj według: " + columnLabels[key]);
+    sort.textContent = columnLabels[key];
+    const direction = document.createElement("span");
+    direction.className = "sort-indicator";
+    direction.setAttribute("aria-hidden", "true");
+    sort.append(direction);
+    sort.addEventListener("click", () => {
+      sortDirection = key === sortBy
+        ? (sortDirection === "asc" ? "desc" : "asc") : "asc";
+      sortBy = key;
+      offset = 0;
+      saveColumnPrefs();
+      applyColumnOrder();
+      void refresh();
+    });
+    th.append(sort);
+    const drag = document.createElement("span");
+    drag.className = "column-grip";
+    drag.draggable = true;
+    drag.tabIndex = 0;
+    drag.setAttribute("role", "button");
+    drag.setAttribute("aria-label", "Przenieś kolumnę: " + columnLabels[key]
+      + ". Przeciągnij lub użyj Alt i strzałek.");
+    drag.title = "Przeciągnij, aby zmienić pozycję kolumny; Alt + strzałki";
+    drag.textContent = "⠿";
+    drag.addEventListener("dragstart", (event) => {
+      dragging = key;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", key);
+      th.classList.add("dragging-column");
+    });
+    drag.addEventListener("dragend", () => {
+      dragging = "";
+      document.querySelectorAll(".dragging-column,.column-target").forEach((node) =>
+        node.classList.remove("dragging-column", "column-target"));
+    });
+    // Native HTML DnD has inconsistent touch support. Pointer fallback moves
+    // the column only when the handle is released over another header.
+    let touchPointer = null;
+    drag.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "mouse") return;
+      touchPointer = event.pointerId;
+      drag.setPointerCapture(event.pointerId);
+      th.classList.add("dragging-column");
+    });
+    drag.addEventListener("pointermove", (event) => {
+      if (touchPointer !== event.pointerId) return;
+      document.querySelectorAll(".column-target").forEach((node) =>
+        node.classList.remove("column-target"));
+      const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("th[data-col]");
+      if (target && target !== th) target.classList.add("column-target");
+    });
+    drag.addEventListener("pointerup", (event) => {
+      if (touchPointer !== event.pointerId) return;
+      const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("th[data-col]");
+      touchPointer = null;
+      th.classList.remove("dragging-column");
+      document.querySelectorAll(".column-target").forEach((node) =>
+        node.classList.remove("column-target"));
+      if (target?.dataset.col) moveColumn(key, target.dataset.col);
+    });
+    drag.addEventListener("pointercancel", () => {
+      touchPointer = null;
+      th.classList.remove("dragging-column");
+    });
+    drag.addEventListener("keydown", (event) => {
+      if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      event.preventDefault();
+      const pos = columnOrder.indexOf(key);
+      const other = columnOrder[pos + (event.key === "ArrowRight" ? 1 : -1)];
+      if (other) {
+        const next = [...columnOrder];
+        const neighbor = next.indexOf(other);
+        [next[pos], next[neighbor]] = [next[neighbor], next[pos]];
+        columnOrder = next;
+        saveColumnPrefs(); applyColumnOrder(); drag.focus();
+      }
+    });
+    th.append(drag);
+    th.addEventListener("dragover", (event) => {
+      if (!dragging) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      th.classList.add("column-target");
+    });
+    th.addEventListener("dragleave", () => th.classList.remove("column-target"));
+    th.addEventListener("drop", (event) => {
+      event.preventDefault();
+      th.classList.remove("column-target");
+      moveColumn(dragging || event.dataTransfer.getData("text/plain"), key);
+      dragging = "";
+    });
+
+    const filterCell = document.createElement("th");
+    filterCell.dataset.col = key;
+    const input = document.createElement("input");
+    input.type = "search";
+    input.className = "column-filter";
+    input.dataset.col = key;
+    input.maxLength = 100;
+    input.autocomplete = "off";
+    input.placeholder = "Filtruj…";
+    input.value = columnFilters[key] || "";
+    input.setAttribute("aria-label", "Filtruj: " + columnLabels[key]);
+    let delay;
+    input.addEventListener("input", () => {
+      columnFilters[key] = input.value;
+      saveCookie("ups_pod_column_filters", JSON.stringify(columnFilters));
+      clearTimeout(delay);
+      delay = setTimeout(() => { offset = 0; void refresh(); }, 300);
+    });
+    filterCell.append(input);
+    filterRow.append(filterCell);
+  });
+  header.after(filterRow);
+  applyColumnOrder();
+}
+
 
 async function requestJson(url, options = {}) {
   const headers = { "X-CSRF-Token": csrf, ...(options.headers || {}) };
@@ -119,7 +321,7 @@ function renderRows() {
     edit.type = "button";
     edit.className = "inline-edit";
     edit.textContent = "Edytuj";
-    edit.setAttribute("aria-label", "Edytuj FBA i datę " + row.tracking);
+    edit.setAttribute("aria-label", "Edytuj Shipment ID Amazon FBA dla " + row.tracking);
     edit.addEventListener("click", () => void editFba(row));
     fbaCell.append(tick, fbaValue, edit);
     tr.append(fbaCell);
@@ -147,7 +349,9 @@ function renderRows() {
     const deliveryDay = row.delivery_date && /^\d{8}$/.test(row.delivery_date)
       ? row.delivery_date.slice(0, 4) + "-" + row.delivery_date.slice(4, 6)
         + "-" + row.delivery_date.slice(6) : "—";
-    const dateCell = addCell(tr, deliveryDay, "delivery-date");
+    const isPlannedDate = row.delivery_date_type === "SDD" && deliveryDay !== "—";
+    const dateCell = addCell(tr, isPlannedDate ? "Plan " + deliveryDay : deliveryDay,
+      "delivery-date" + (isPlannedDate ? " planned" : ""));
     dateCell.title = row.delivery_date_type === "DEL" ? "Potwierdzona data doręczenia"
       : row.delivery_date_type === "SDD" ? "Planowana data dostawy (SDD)"
       : row.delivery_date_type || "Brak informacji";
@@ -175,6 +379,15 @@ function renderRows() {
     upsTag.setAttribute("aria-label", statusDetails);
     upsTag.setAttribute("tabindex", "0");
     upsCell.append(upsTag);
+    if (isPastDeliveryDate(row)) {
+      const support = document.createElement("button");
+      support.type = "button";
+      support.className = "support-case";
+      support.textContent = "Wyjaśnij z UPS";
+      support.title = "Przygotuj zgłoszenie po potwierdzeniu fizycznego doręczenia";
+      support.addEventListener("click", () => openSupportCase(row));
+      upsCell.append(support);
+    }
     tr.append(upsCell);
 
     const statusCell = document.createElement("td");
@@ -207,8 +420,7 @@ function renderRows() {
       bubble.type = "button";
       bubble.className = "status document-bubble " + (info[1] === "waiting" ? "waiting"
         : info[1] === "retry" ? "retry" : "queued");
-      bubble.textContent = info[1] === "waiting" ? "Oczekuje"
-        : info[1] === "retry" ? "Błąd" : "—";
+      bubble.textContent = info[1] === "retry" ? "Błąd" : "Oczekuje";
       bubble.title = "Próby: " + row.attempts + " · Ostatnio: " + last + next
         + (row.error ? " · " + row.error : "");
       bubble.setAttribute("aria-label", "Historia operacji " + row.tracking);
@@ -217,6 +429,7 @@ function renderRows() {
       doc.append(bubble);
     }
     tr.append(doc);
+    [...tr.cells].forEach((cell, index) => { cell.dataset.col = COLUMN_KEYS[index]; });
     tbody.append(tr);
   }
   $("page-info").textContent = total
@@ -226,6 +439,7 @@ function renderRows() {
   $("next-page").disabled = offset + PAGE_SIZE >= total;
   $("select-page").checked = rows.length > 0 && rows.every((r) => selected.has(r.tracking));
   syncSelected();
+  applyColumnOrder();
 }
 
 const upsTooltip = document.createElement("div");
@@ -270,15 +484,17 @@ function syncSelected() {
 }
 
 async function refresh() {
+  const serial = ++refreshSerial;
   const params = new URLSearchParams({
-    scope,
-    month: activeMonth,
-    q: $("query").value.trim(),
-    limit: String(PAGE_SIZE),
-    offset: String(offset),
+    scope, month: activeMonth, q: $("query").value.trim(),
+    sort: sortBy, direction: sortDirection,
+    limit: String(PAGE_SIZE), offset: String(offset),
   });
+  for (const key of COLUMN_KEYS)
+    if ((columnFilters[key] || "").trim()) params.set("f_" + key, columnFilters[key].trim());
   try {
     const payload = await requestJson("/api/shipments?" + params);
+    if (serial !== refreshSerial) return;
     rows = payload.rows;
     total = payload.total;
     const selector = $("month-filter");
@@ -302,6 +518,7 @@ async function refresh() {
     $("refresh-status").textContent = "Aktualizacja: " + new Date().toLocaleTimeString("pl-PL");
     renderRows();
   } catch (error) {
+    if (serial !== refreshSerial) return;
     // A background GET failure is not an import failure. Keep existing rows
     // and retry on the next refresh, without changing the import notice.
     $("refresh-status").textContent = "Nie udało się odświeżyć: "
@@ -319,10 +536,20 @@ function setIntakeCollapsed(collapsed) {
 $("intake-toggle").addEventListener("click", () => {
   setIntakeCollapsed(!$("intake-content").hidden);
 });
-setIntakeCollapsed(getCookie("ups_pod_intake_collapsed") === "1");
+// When there is no preference, prioritize the tracking grid instead of the importer.
+setIntakeCollapsed(getCookie("ups_pod_intake_collapsed") !== "0");
 $("query").value = getCookie("ups_pod_query").slice(0, 200);
 document.querySelectorAll("[data-scope]").forEach((button) => {
   button.classList.toggle("active", button.dataset.scope === scope);
+});
+
+initColumns();
+$("clear-column-filters").addEventListener("click", () => {
+  columnFilters = {};
+  document.querySelectorAll(".column-filter").forEach((input) => { input.value = ""; });
+  saveCookie("ups_pod_column_filters", "{}");
+  offset = 0;
+  void refresh();
 });
 
 $("intake-form").addEventListener("submit", async (event) => {
@@ -420,37 +647,152 @@ $("retry-selected").addEventListener("click", async () => {
     await refresh();
   } catch (error) { notice(error.message, true); }
 });
-async function editFba(row) {
-  const shipment_id = window.prompt("Amazon FBA Shipment ID dla " + row.tracking, row.shipment_id || "");
-  if (shipment_id === null) return;
-  const replace = Boolean(row.shipment_id && row.shipment_id !== shipment_id.toUpperCase());
-  if (replace && !window.confirm("Zmienić istniejące FBA dla " + row.tracking + "?")) return;
-  try {
-    await requestJson("/api/fba", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entries: [{ tracking: row.tracking, shipment_id }], replace }),
-    });
-    notice("Przypisano FBA dla " + row.tracking + ". Datę nadania pobiera UPS.");
-    await refresh();
-  } catch (error) { notice(error.message, true); }
+let fbaContext = [];
+function tableNotice(message, error = false) {
+  const box = $("table-notice");
+  box.textContent = message;
+  box.hidden = false;
+  box.classList.toggle("error", error);
 }
-
-$("fba-selected").addEventListener("click", async () => {
-  const shipment_id = window.prompt("Shipment ID dla " + selected.size + " zaznaczonych numerów UPS:");
-  if (shipment_id === null) return;
-  const oldAssignments = rows.filter((row) => selected.has(row.tracking)
-    && row.shipment_id && row.shipment_id !== shipment_id.toUpperCase());
-  if (oldAssignments.length && !window.confirm("Niektóre numery mają już inny FBA. Zastąpić go dla zaznaczonych?")) return;
+function updateFbaConflictHint() {
+  const typed = $("fba-dialog-id").value.trim().toUpperCase();
+  const conflicts = fbaContext.filter((item) =>
+    item.shipment_id && item.shipment_id !== typed).length;
+  const help = $("fba-help");
+  help.textContent = conflicts
+    ? conflicts + " widocznych przesyłek ma inne FBA. Zaznacz zastąpienie, aby je zmienić."
+    : "Jedno FBA może zostać przypisane do wielu numerów UPS.";
+}
+function openFbaEditor(entries) {
+  if (!entries.length) return;
+  fbaContext = entries;
+  const single = entries.length === 1;
+  $("fba-dialog-title").textContent = single ? "Edytuj Shipment ID"
+    : "Przypisz Shipment ID do " + entries.length + " przesyłek";
+  $("fba-dialog-caption").textContent = single
+    ? "Numer UPS: " + entries[0].tracking
+    : "Zmiana dotyczy " + entries.length + " zaznaczonych numerów UPS.";
+  const shared = [...new Set(entries.map((r) => r.shipment_id).filter(Boolean))];
+  $("fba-dialog-id").value = single && shared.length ? shared[0] : "";
+  $("fba-replace").checked = false;
+  $("fba-dialog-error").hidden = true;
+  $("fba-save").disabled = false;
+  updateFbaConflictHint();
+  $("fba-dialog").showModal();
+  $("fba-dialog-id").focus();
+  $("fba-dialog-id").select();
+}
+function editFba(row) { openFbaEditor([row]); }
+$("fba-dialog-id").addEventListener("input", updateFbaConflictHint);
+$("fba-selected").addEventListener("click", () => {
+  // Selected rows may span multiple pages; unknown assignments are verified server-side.
+  const visible = new Map(rows.map((r) => [r.tracking, r]));
+  openFbaEditor([...selected].map((tracking) =>
+    visible.get(tracking) || { tracking, shipment_id: "" }));
+});
+$("fba-dialog-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const shipment_id = $("fba-dialog-id").value.trim().toUpperCase();
+  const errorBox = $("fba-dialog-error");
+  if (!/^FBA[A-Z0-9]+$/.test(shipment_id) || shipment_id === "FBA0000000") {
+    errorBox.textContent = "Wpisz poprawny Shipment ID zaczynający się od FBA.";
+    errorBox.hidden = false;
+    $("fba-dialog-id").focus();
+    return;
+  }
+  const replace = $("fba-replace").checked;
+  const conflicts = fbaContext.filter((item) => item.shipment_id
+    && item.shipment_id !== shipment_id);
+  if (conflicts.length && !replace) {
+    errorBox.textContent = "Istnieje inne przypisanie FBA. Zaznacz zgodę na jego zastąpienie.";
+    errorBox.hidden = false;
+    return;
+  }
+  const button = $("fba-save");
+  button.disabled = true;
+  errorBox.hidden = true;
   try {
     const result = await requestJson("/api/fba", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entries: [...selected].map((tracking) => ({
-        tracking, shipment_id
-      })), replace: oldAssignments.length > 0 }),
+      body: JSON.stringify({
+        entries: fbaContext.map((r) => ({ tracking: r.tracking, shipment_id })),
+        replace,
+      }),
     });
-    notice("FBA przypisano do " + result.assigned + " numerów UPS.");
+    $("fba-dialog").close();
+    tableNotice("FBA przypisano do " + result.assigned + " przesyłek.");
     await refresh();
-  } catch (error) { notice(error.message, true); }
+  } catch (error) {
+    errorBox.textContent = error.message;
+    errorBox.hidden = false;
+  } finally { button.disabled = false; }
+});
+
+document.querySelectorAll("[data-close-dialog]").forEach((button) =>
+  button.addEventListener("click", () => $(button.dataset.closeDialog).close()));
+
+let supportCase = null;
+const WarsawDate = () => Object.fromEntries(
+  new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(new Date()).map((item) => [item.type, item.value]));
+function isPastDeliveryDate(row) {
+  if (row.state === "ready" || row.delivery_date_type !== "SDD"
+      || !/^\d{8}$/.test(row.delivery_date || "")) return false;
+  const now = WarsawDate();
+  const today = now.year + now.month + now.day;
+  return row.delivery_date < today;
+}
+function openSupportCase(row) {
+  supportCase = row;
+  $("ups-case-caption").textContent = row.tracking
+    + " · planowana data doręczenia " + (row.delivery_date || "—");
+  $("ups-evidence").value = "";
+  $("ups-confirmation").checked = false;
+  $("ups-case-error").hidden = true;
+  $("ups-case-result").hidden = true;
+  $("ups-case-dialog").showModal();
+  $("ups-evidence").focus();
+}
+$("ups-case-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!supportCase) return;
+  const evidence = $("ups-evidence").value.trim();
+  if (!evidence || !$("ups-confirmation").checked) {
+    $("ups-case-error").textContent = "Podaj źródło i potwierdź fizyczny odbiór przesyłki.";
+    $("ups-case-error").hidden = false;
+    return;
+  }
+  $("ups-case-error").hidden = true;
+  const row = supportCase;
+  $("ups-case-draft").value = [
+    "Temat: Prośba o weryfikację doręczenia i uzupełnienie statusu UPS – " + row.tracking,
+    "",
+    "Dzień dobry,",
+    "Proszę o sprawdzenie historii przesyłki " + row.tracking + ".",
+    "W systemie śledzenia UPS status: " + (row.ups_status || "brak statusu") + ".",
+    "Data planowanego doręczenia według UPS: " + (row.delivery_date || "brak") + ".",
+    "Otrzymaliśmy niezależną informację o fizycznym odbiorze:",
+    evidence,
+    "",
+    "Proszę o weryfikację tego zdarzenia, wyjaśnienie braku skanu doręczenia,",
+    "odpowiednią korektę danych trackingowych po stronie UPS, o ile dostawa zostanie",
+    "potwierdzona w Państwa dokumentacji, oraz udostępnienie Proof of Delivery.",
+    "Proszę też o numer sprawy, jeśli niezbędne będzie dodatkowe wyjaśnienie.",
+    "",
+    "Z poważaniem"
+  ].join("\n");
+  $("ups-case-result").hidden = false;
+  $("ups-case-draft").focus();
+});
+$("ups-copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("ups-case-draft").value);
+    $("ups-copy").textContent = "Skopiowano";
+  } catch {
+    $("ups-case-draft").select();
+    $("ups-copy").textContent = "Zaznaczono — skopiuj tekst";
+  }
 });
 
 
@@ -490,12 +832,23 @@ async function refreshLogs(older = false) {
   } catch (error) { $("logs-status").textContent = error.message; }
   finally { logsBusy = false; }
 }
+function markActiveTab(active) {
+  for (const key of ["shipments", "logs"]) {
+    const button = $("tab-" + key);
+    const chosen = active === key;
+    button.classList.toggle("active", chosen);
+    button.setAttribute("aria-selected", String(chosen));
+    button.tabIndex = chosen ? 0 : -1;
+  }
+}
 $("tab-logs").addEventListener("click", () => {
+  markActiveTab("logs");
   $("shipments-panel").hidden = true; $("logs-panel").hidden = false;
   if (!listReturnPoint) $("logs-return").hidden = true;
   void refreshLogs();
 });
 $("tab-shipments").addEventListener("click", () => {
+  markActiveTab("shipments");
   $("shipments-panel").hidden = false; $("logs-panel").hidden = true;
   $("logs-return").hidden = true;
 });
@@ -534,4 +887,15 @@ $("show-tracking-fields").addEventListener("click", async () => {
       ? data.paths.join("\n")
       : "Brak zapisanych kluczy. Pola zostaną zarejestrowane przy kolejnym odczycie UPS API.";
   } catch (error) { pre.textContent = error.message; }
+});
+
+document.querySelector(".view-tabs").addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const buttons = [$("tab-shipments"), $("tab-logs")];
+  const index = buttons.indexOf(document.activeElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? 1
+    : (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[next].click();
+  buttons[next].focus();
 });

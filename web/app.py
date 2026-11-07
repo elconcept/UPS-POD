@@ -100,11 +100,21 @@ def create_app(testing: bool = False) -> Flask:
         try:
             limit = int(request.args.get("limit", 200))
             offset = int(request.args.get("offset", 0))
-            result = service.list_numbers(request.args.get("q", ""),
-                                          request.args.get("scope", "all"), limit, offset,
-                                          request.args.get("month", "all"))
+            result = service.list_numbers(
+                request.args.get("q", ""), request.args.get("scope", "all"),
+                limit, offset, request.args.get("month", "all"),
+                sort_by=request.args.get("sort", "ship_date"),
+                sort_dir=request.args.get("direction", "desc"),
+                column_filters={key: request.args.get("f_" + key, "")
+                                for key in service.LIST_COLUMNS},
+            )
         except ValueError as exc:
             abort(400, str(exc))
+        # Database-internal paths and recipient metadata are not needed by the UI.
+        # Never expose NAS filesystem paths through the public dashboard API.
+        for row in result["rows"]:
+            for key in ("pod_path", "received_by", "photo_filename", "delivered_at"):
+                row.pop(key, None)
         return jsonify(**result, stats=service.stats())
 
     @web.get("/api/shipments/<tracking>/photo")

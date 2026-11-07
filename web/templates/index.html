@@ -21,9 +21,11 @@
   {% if not credentials %}
     <div class="alert warning" role="alert">Brak danych UPS w pliku <code>.env</code>. Nowe numery zostaną zapisane, a przetwarzanie rozpocznie się po konfiguracji i restarcie kontenerów.</div>
   {% endif %}
-  <nav aria-label="Zakładki"><button id="tab-shipments" type="button">Przesyłki</button>
-  <button id="tab-logs" type="button">Logi</button></nav>
-  <section id="logs-panel" class="panel" hidden>
+  <nav class="view-tabs" aria-label="Widoki aplikacji" role="tablist">
+    <button class="view-tab active" id="tab-shipments" type="button" role="tab" aria-selected="true" aria-controls="shipments-panel">Przesyłki</button>
+    <button class="view-tab" id="tab-logs" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="logs-panel">Dziennik operacji</button>
+  </nav>
+  <section id="logs-panel" class="panel" role="tabpanel" aria-labelledby="tab-logs" hidden>
   <button id="logs-return" class="secondary logs-return" type="button" hidden>← Wróć do miejsca na liście przesyłek</button>
   <h2>Dziennik operacji</h2>
   <div class="log-toolbar" role="group" aria-label="Filtr poziomu logów">
@@ -43,7 +45,7 @@
   <div class="table-wrap"><table><thead><tr><th>Czas</th><th>Poziom</th><th>Wykonawca</th><th>Operacja</th>
   <th>Numer UPS</th><th>HTTP</th><th>Opis</th></tr></thead><tbody id="log-rows"></tbody></table></div>
   <button id="logs-older" type="button">Starsze wpisy</button></section>
-  <div id="shipments-panel">
+  <div id="shipments-panel" role="tabpanel" aria-labelledby="tab-shipments">
   <section class="stats" aria-label="Stan kolejki">
     <article class="stat"><div>Wszystkie numery</div><strong id="count-total">—</strong></article>
     <article class="stat good"><div>Potwierdzenia pobrane</div><strong id="count-ready">—</strong></article>
@@ -67,22 +69,27 @@
       <div><h2>Potwierdzenia i statusy</h2><p>Lista jest zapisana w SQLite i aktualizowana automatycznie. Najedź na czerwony status, aby zobaczyć błąd.</p></div>
       <span class="refresh" id="refresh-status">Odświeżanie co 7 s</span>
     </div>
+    <p id="table-notice" class="table-notice" role="status" aria-live="polite" hidden></p>
     <div class="actions">
+      <div class="action-main">
       <div class="filters" id="filters" role="group" aria-label="Filtry listy">
         <button class="filter active" data-scope="all" type="button">Wszystkie</button>
         <button class="filter" data-scope="ready" type="button">Pobrane</button>
         <button class="filter" data-scope="missing" type="button">Bez POD</button>
       </div>
-      <label class="month-label" for="month-filter">Miesiąc</label>
-      <select id="month-filter" aria-label="Miesiąc nadania"><option value="all">Wszystkie miesiące</option></select>
+      <div class="month-control"><label class="month-label" for="month-filter">Miesiąc</label>
+      <select id="month-filter" aria-label="Miesiąc nadania"><option value="all">Wszystkie miesiące</option></select></div>
       <input type="search" id="query" placeholder="Szukaj numeru lub błędu…" aria-label="Szukaj" />
+      </div><div class="action-secondary">
       <button class="secondary" type="button" id="download-selected">Pobierz zaznaczone ZIP</button>
       <button class="secondary" type="button" id="download-all">Pobierz wszystkie POD ZIP</button>
       <button class="secondary" type="button" id="retry-selected">Ponów zaznaczone</button>
       <button class="secondary" type="button" id="fba-selected">Przypisz FBA zaznaczonym</button>
+      <button class="secondary" type="button" id="clear-column-filters">Wyczyść filtry kolumn</button>
+      </div>
     </div>
     <div class="table-wrap">
-      <table>
+      <table id="shipments-table">
         <thead><tr>
           <th class="fba-header"><label><input type="checkbox" id="select-page" title="Zaznacz widoczne numery"><span>Shipment ID Amazon FBA</span></label></th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>Waga</th><th>Status UPS</th><th>Stan kolejki</th><th>Dokument</th>
         </tr></thead>
@@ -95,7 +102,48 @@
     </footer>
   </section>
   </div>
-  <footer class="page-footer">UPS Tracking API · kolejka sekwencyjna · ponowienie nieudanych prób co 3 godziny · oryginały POD i PDF przechowywane na Synology</footer>
+  <dialog id="fba-dialog" class="data-dialog" aria-labelledby="fba-dialog-title">
+    <form id="fba-dialog-form" novalidate>
+      <div class="dialog-head"><div><h2 id="fba-dialog-title">Przypisz Shipment ID Amazon FBA</h2>
+        <p id="fba-dialog-caption">Wpisz identyfikator dla wybranych przesyłek.</p></div>
+        <button class="icon-close" type="button" data-close-dialog="fba-dialog" aria-label="Zamknij">×</button>
+      </div>
+      <label class="field-label" for="fba-dialog-id">Shipment ID Amazon FBA</label>
+      <input id="fba-dialog-id" type="text" autocomplete="off" spellcheck="false" required
+        placeholder="FBA15MSX7FKL" aria-describedby="fba-help fba-dialog-error">
+      <p id="fba-help" class="field-help">Zaczyna się od FBA. Zmiana nie wpływa na numer śledzenia UPS.</p>
+      <label class="check-row"><input type="checkbox" id="fba-replace">
+        <span>Zastąp wcześniejsze przypisania FBA (jeśli są inne)</span></label>
+      <p id="fba-dialog-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close-dialog="fba-dialog">Anuluj</button>
+      <button type="submit" id="fba-save">Zapisz przypisanie</button></div>
+    </form>
+  </dialog>
+  <dialog id="ups-case-dialog" class="data-dialog" aria-labelledby="ups-case-title">
+    <form id="ups-case-form" novalidate>
+      <div class="dialog-head"><div><h2 id="ups-case-title">Wyjaśnienie doręczenia w UPS</h2>
+        <p id="ups-case-caption"></p></div>
+        <button type="button" class="icon-close" data-close-dialog="ups-case-dialog" aria-label="Zamknij">×</button></div>
+      <p class="field-help">Sama przekroczona data przewidywanej dostawy nie potwierdza doręczenia.
+        Zgłoszenie przygotuj dopiero po uzyskaniu niezależnej informacji o fizycznym odbiorze.</p>
+      <label class="field-label" for="ups-evidence">Źródło potwierdzenia fizycznego odbioru</label>
+      <textarea id="ups-evidence" rows="3" placeholder="Np. potwierdzenie przyjęcia przez magazyn, data i osoba kontaktowa" required></textarea>
+      <label class="check-row"><input type="checkbox" id="ups-confirmation">
+        <span>Potwierdzam, że otrzymałem(-am) niezależne potwierdzenie fizycznego doręczenia.</span></label>
+      <p id="ups-case-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close-dialog="ups-case-dialog">Anuluj</button>
+        <button type="submit">Przygotuj treść zgłoszenia</button></div>
+      <div id="ups-case-result" hidden>
+        <label class="field-label" for="ups-case-draft">Treść do przekazania UPS — sprawdź przed wysłaniem</label>
+        <textarea id="ups-case-draft" rows="9" readonly></textarea>
+        <div class="dialog-actions"><button type="button" id="ups-copy" class="secondary">Kopiuj treść</button>
+          <a id="ups-official-form" class="button-link" href="https://www.ups.com/upsemail/input?loc=pl_PL"
+            target="_blank" rel="noopener noreferrer">Otwórz formularz UPS</a></div>
+        <p class="field-help">Aplikacja nie wysyła wiadomości automatycznie i nie zmienia statusu UPS.</p>
+      </div>
+    </form>
+  </dialog>
+  <footer class="page-footer">Amazon FBA Shipment ID | UPS Tracking API by CONCEPT ® 2026</footer>
 </main>
 </body>
 </html>
