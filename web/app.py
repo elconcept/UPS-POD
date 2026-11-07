@@ -4,15 +4,18 @@ from __future__ import annotations
 import io
 import os
 import secrets
+import time
 import zipfile
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
-from flask import Flask, abort, jsonify, render_template, request, send_file, session
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session
 from werkzeug.exceptions import HTTPException
 
 import service
 import support_mail
+import config_store
+import gmail_oauth
 
 ROOT = Path(__file__).resolve().parent
 HOST = os.getenv("PUBLIC_HOST", "ups.xlap.pl").lower()
@@ -40,7 +43,9 @@ def create_app(testing: bool = False) -> Flask:
         MAX_CONTENT_LENGTH=1024 * 1024,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SECURE=not testing,
-        SESSION_COOKIE_SAMESITE="Strict",
+        # OAuth Google redirects to a top-level GET; Strict would drop the
+        # state cookie. Mutating requests still require Origin + CSRF.
+        SESSION_COOKIE_SAMESITE="Lax",
         PREFERRED_URL_SCHEME="https",
     )
     service.init_db()
@@ -91,10 +96,87 @@ def create_app(testing: bool = False) -> Flask:
     def index():
         if "csrf" not in session:
             session["csrf"] = secrets.token_urlsafe(32)
-        cid = os.getenv("UPS_CLIENT_ID") or os.getenv("client_id")
-        secret = os.getenv("UPS_CLIENT_SECRET") or os.getenv("client_secret")
+        cid, secret = config_store.ups_credentials()
         return render_template("index.html", csrf=session["csrf"],
                                credentials=bool(cid and secret), hostname=HOST)
+
+    @web.get("/api/config")
+    def config_status():
+        return jsonify(**config_store.masked_status(), gmail=gmail_oauth.status())
+
+    @web.post("/api/config/ups")
+    def config_ups():
+        data = request.get_json(silent=True) or {}
+        try:
+            changed = config_store.update({
+                "UPS_CLIENT_ID": data.get("client_id", ""),
+                "UPS_CLIENT_SECRET": data.get("client_secret", ""),
+            })
+            if changed:
+                service.audit("user", "ups_config_updated",
+                              description="Zmodyfikowano pola konfiguracji UPS: "
+                              + ", ".join(changed))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(saved=True, changed=changed, **config_store.masked_status())
+
+    @web.post("/api/config/google")
+    def config_google():
+        data = request.get_json(silent=True) or {}
+        try:
+            changed = config_store.update({
+                "GOOGLE_OAUTH_CLIENT_ID": data.get("client_id", ""),
+                "GOOGLE_OAUTH_CLIENT_SECRET": data.get("client_secret", ""),
+            })
+            if changed:
+                service.audit("user", "google_client_config_updated",
+                              description="Zmodyfikowano OAuth Google: " + ", ".join(changed))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(saved=True, changed=changed, **config_store.masked_status(),
+                       gmail=gmail_oauth.status())
+
+    @web.post("/api/config/gmail/start")
+    def gmail_start():
+        try:
+            url, state = gmail_oauth.authorization_url()
+        except gmail_oauth.GoogleConfigError as exc:
+            return jsonify(error=str(exc)), 422
+        session["gmail_oauth_state"] = state
+        session["gmail_oauth_started"] = int(time.time())
+        return jsonify(url=url)
+
+    @web.get("/api/config/gmail/callback")
+    def gmail_callback():
+        state = session.pop("gmail_oauth_state", None)
+        started = session.pop("gmail_oauth_started", None)
+        supplied = request.args.get("state", "")
+        if (not state or not started or time.time() - started > 600
+                or not secrets.compare_digest(state, supplied)):
+            abort(403, "Nieprawidłowy lub wygasły stan autoryzacji Google.")
+        if request.args.get("error"):
+            return redirect("/?config=gmail-denied")
+        if not request.args.get("code"):
+            abort(400, "Brak kodu OAuth Google.")
+        try:
+            # Rebuild the trusted HTTPS callback URL: Cloudflare Tunnel may
+            # connect to Gunicorn using HTTP internally.
+            authorization_response = gmail_oauth.redirect_uri() + "?" + urlencode({
+                "state": supplied, "code": request.args["code"][:2048]
+            })
+            gmail_oauth.complete(authorization_response, state)
+            service.audit("user", "gmail_oauth_connected",
+                          description="Połączono konto Gmail przez OAuth.")
+        except gmail_oauth.GoogleConfigError:
+            return redirect("/?config=gmail-failed")
+        return redirect("/?config=gmail-connected")
+
+    @web.post("/api/config/gmail/disconnect")
+    def gmail_disconnect():
+        gmail_oauth.disconnect()
+        service.audit("user", "gmail_oauth_disconnected",
+                      description="Usunięto lokalny token Gmail.")
+        return jsonify(disconnected=True, gmail=gmail_oauth.status())
 
     @web.get("/api/shipments")
     def shipments():
@@ -248,8 +330,10 @@ def create_app(testing: bool = False) -> Flask:
                 archive.write(path, arcname=name)
         service.audit("user", "download_zip", description=f"Dokumentów {len(paths)}.")
         stream.seek(0)
-        return send_file(stream, mimetype="application/zip", as_attachment=True,
-                         download_name="ups-pod-potwierdzenia.zip")
+        response = send_file(stream, mimetype="application/zip", as_attachment=True,
+                             download_name="ups-pod-potwierdzenia.zip")
+        response.headers["X-UPS-POD-Count"] = str(len(paths))
+        return response
 
     return web
 

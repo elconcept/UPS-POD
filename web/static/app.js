@@ -2,6 +2,7 @@
 "use strict";
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
 const selected = new Set();
+const readySelected = new Set();
 const COOKIE_AGE = 365 * 24 * 60 * 60;
 function getCookie(name) {
   const value = document.cookie.split("; ").find((part) => part.startsWith(name + "="));
@@ -504,7 +505,7 @@ function renderRows() {
       ? row.delivery_date.slice(0, 4) + "-" + row.delivery_date.slice(4, 6)
         + "-" + row.delivery_date.slice(6) : "—";
     const isPlannedDate = ["SDD", "RDD"].includes(row.delivery_date_type) && deliveryDay !== "—";
-    const dateCell = addCell(tr, isPlannedDate ? "Plan " + deliveryDay : deliveryDay,
+    const dateCell = addCell(tr, deliveryDay,
       "delivery-date" + (isPlannedDate ? " planned" : ""));
     dateCell.title = row.delivery_date_type === "DEL" ? "Potwierdzona data doręczenia"
       : row.delivery_date_type === "RDD" ? "Nowy termin dostawy (RDD)"
@@ -663,15 +664,23 @@ $("rows").addEventListener("focusout", hideUpsTooltip);
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") hideUpsTooltip(); });
 
 function syncSelected() {
+  for (const row of rows) {
+    if (row.state === "ready" && selected.has(row.tracking)) readySelected.add(row.tracking);
+    else readySelected.delete(row.tracking);
+  }
   const count = selected.size;
+  const available = [...readySelected].filter((number) => selected.has(number)).length;
   $("download-selected").textContent = count
-    ? "Pobierz zaznaczone ZIP (" + count + ")" : "Pobierz zaznaczone ZIP";
+    ? "Pobierz ZIP (" + available + " PDF / " + count + " wybranych)" : "Pobierz zaznaczone ZIP";
+  $("download-selected").title = count && !available
+    ? "Żaden zaznaczony numer nie ma jeszcze gotowego potwierdzenia POD."
+    : "Pobierz gotowe POD; przesyłki bez dokumentu zostaną pominięte.";
   $("retry-selected").textContent = count
     ? "Ponów zaznaczone (" + count + ")" : "Ponów zaznaczone";
   $("fba-selected").textContent = count
     ? "Przypisz FBA zaznaczonym (" + count + ")" : "Przypisz FBA zaznaczonym";
   $("fba-selected").disabled = count === 0;
-  $("download-selected").disabled = count === 0;
+  $("download-selected").disabled = available === 0;
   $("retry-selected").disabled = count === 0;
 }
 
@@ -831,7 +840,13 @@ $("select-page").addEventListener("change", (event) => {
 
 async function downloadZip(all) {
   try {
-    const payload = all ? { all: true } : { trackings: [...selected] };
+    const eligible = [...readySelected].filter((number) => selected.has(number));
+    if (!all && !eligible.length) {
+      tableNotice("Żadna zaznaczona przesyłka nie ma gotowego POD do pobrania.", true);
+      return;
+    }
+    const skipped = all ? 0 : selected.size - eligible.length;
+    const payload = all ? { all: true } : { trackings: eligible };
     const response = await fetch("/api/zip", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
@@ -850,8 +865,10 @@ async function downloadZip(all) {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-    notice("Przygotowano archiwum ZIP.");
-  } catch (error) { notice(error.message, true); }
+    const included = Number(response.headers.get("X-UPS-POD-Count")) || eligible.length;
+    tableNotice("Przygotowano ZIP: " + included + " dokumentów."
+      + (skipped ? " Pominięto " + skipped + " zaznaczonych przesyłek bez POD." : ""));
+  } catch (error) { tableNotice("Nie udało się pobrać ZIP: " + error.message, true); }
 }
 
 $("download-selected").addEventListener("click", () => void downloadZip(false));
@@ -1019,24 +1036,27 @@ async function refreshLogs(older = false) {
   finally { logsBusy = false; }
 }
 function markActiveTab(active) {
-  for (const key of ["shipments", "logs"]) {
+  for (const key of ["shipments", "logs", "config"]) {
     const button = $("tab-" + key);
     const chosen = active === key;
     button.classList.toggle("active", chosen);
     button.setAttribute("aria-selected", String(chosen));
     button.tabIndex = chosen ? 0 : -1;
+    $(key + "-panel").hidden = !chosen;
   }
 }
 $("tab-logs").addEventListener("click", () => {
   markActiveTab("logs");
-  $("shipments-panel").hidden = true; $("logs-panel").hidden = false;
   if (!listReturnPoint) $("logs-return").hidden = true;
   void refreshLogs();
 });
 $("tab-shipments").addEventListener("click", () => {
   markActiveTab("shipments");
-  $("shipments-panel").hidden = false; $("logs-panel").hidden = true;
   $("logs-return").hidden = true;
+});
+$("tab-config").addEventListener("click", () => {
+  markActiveTab("config");
+  void refreshConfiguration();
 });
 $("logs-return").addEventListener("click", () => {
   const point = listReturnPoint;
@@ -1078,10 +1098,122 @@ $("show-tracking-fields").addEventListener("click", async () => {
 document.querySelector(".view-tabs").addEventListener("keydown", (event) => {
   if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
-  const buttons = [$("tab-shipments"), $("tab-logs")];
+  const buttons = [$("tab-shipments"), $("tab-logs"), $("tab-config")];
   const index = buttons.indexOf(document.activeElement);
-  const next = event.key === "Home" ? 0 : event.key === "End" ? 1
+  const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
     : (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
   buttons[next].click();
   buttons[next].focus();
 });
+
+// Settings: server only supplies masked indicators; all sensitive fields stay
+// empty and are sent solely when the operator enters a replacement.
+function configNotice(message, error = false) {
+  const panel = $("config-notice");
+  panel.hidden = false;
+  panel.textContent = message;
+  panel.classList.toggle("error", error);
+}
+async function refreshConfiguration() {
+  try {
+    const config = await requestJson("/api/config");
+    const upsReady = !!config.ups_client_id && !!config.ups_client_secret;
+    $("ups-config-indicator").textContent = upsReady ? "Skonfigurowano" : "Brak danych";
+    $("ups-config-indicator").classList.toggle("configured", upsReady);
+    $("ups-config-id").placeholder = config.ups_client_id || "Wpisz UPS Client ID";
+    $("ups-config-secret").placeholder = config.ups_client_secret || "Wpisz UPS Client Secret";
+    $("gmail-config-id").placeholder = config.google_client_id || "Google OAuth Client ID";
+    $("gmail-config-secret").placeholder =
+      config.google_client_secret || "Google OAuth Client Secret";
+    const google = config.gmail;
+    $("gmail-config-indicator").textContent =
+      google.configured ? "Gmail połączony" : google.oauth_ready ? "Oczekuje na logowanie" : "Nie skonfigurowano";
+    $("gmail-config-indicator").classList.toggle("configured", google.configured);
+    $("gmail-connected-info").hidden = !google.configured;
+    $("gmail-connected-info").textContent = google.configured
+      ? "Aktywny nadawca: " + google.email : "";
+    $("gmail-redirect-uri").textContent = google.redirect_uri;
+    $("gmail-connect").disabled = !google.oauth_ready;
+    $("gmail-connect").textContent = google.configured
+      ? "Połącz ponownie / zmień konto" : "Połącz z kontem Google";
+    $("gmail-disconnect").hidden = !google.configured;
+  } catch (error) {
+    configNotice("Błąd odczytu konfiguracji: " + error.message, true);
+  }
+}
+$("ups-config-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('[type="submit"]');
+  button.disabled = true;
+  try {
+    const result = await requestJson("/api/config/ups", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({client_id: $("ups-config-id").value.trim(),
+        client_secret: $("ups-config-secret").value.trim()}),
+    });
+    $("ups-config-id").value = "";
+    $("ups-config-secret").value = "";
+    configNotice(result.changed.length ? "Dane UPS zapisano w chronionym .env."
+      : "Nie wpisano nowych wartości; konfiguracja pozostała bez zmian.");
+    await refreshConfiguration();
+  } catch (error) {
+    configNotice(error.message, true);
+  } finally { button.disabled = false; }
+});
+$("gmail-config-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('[type="submit"]');
+  button.disabled = true;
+  try {
+    const result = await requestJson("/api/config/google", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({client_id: $("gmail-config-id").value.trim(),
+        client_secret: $("gmail-config-secret").value.trim()}),
+    });
+    $("gmail-config-id").value = "";
+    $("gmail-config-secret").value = "";
+    configNotice(result.changed.length
+      ? "Klient Google OAuth zapisany. Teraz użyj «Połącz z kontem Google»."
+      : "Nie wpisano nowych danych Google OAuth.");
+    await refreshConfiguration();
+  } catch (error) {
+    configNotice(error.message, true);
+  } finally { button.disabled = false; }
+});
+$("gmail-connect").addEventListener("click", async () => {
+  const button = $("gmail-connect");
+  button.disabled = true;
+  try {
+    const result = await requestJson("/api/config/gmail/start", { method: "POST" });
+    const url = new URL(result.url);
+    if (url.protocol !== "https:" || url.hostname !== "accounts.google.com")
+      throw new Error("Nieprawidłowy adres autoryzacji Google.");
+    window.location.assign(url.href);
+  } catch (error) {
+    configNotice("Nie można rozpocząć OAuth: " + error.message, true);
+    button.disabled = false;
+  }
+});
+$("gmail-disconnect").addEventListener("click", async () => {
+  const button = $("gmail-disconnect");
+  button.disabled = true;
+  try {
+    await requestJson("/api/config/gmail/disconnect", { method: "POST" });
+    configNotice("Lokalny dostęp Gmail odłączony. Uprawnienia można również cofnąć w Google.");
+    await refreshConfiguration();
+  } catch (error) {
+    configNotice(error.message, true);
+  } finally { button.disabled = false; }
+});
+const oauthResult = new URLSearchParams(window.location.search).get("config");
+if (oauthResult) {
+  $("tab-config").click();
+  const notes = {
+    "gmail-connected": "Konto Gmail pomyślnie połączone.",
+    "gmail-denied": "Logowanie Google zostało anulowane.",
+    "gmail-failed": "Nie udało się zakończyć autoryzacji Google. Sprawdź Client ID, Secret i redirect URI.",
+  };
+  configNotice(notes[oauthResult] || "Powrót z autoryzacji Google.",
+    oauthResult !== "gmail-connected");
+  window.history.replaceState({}, "", window.location.pathname);
+}

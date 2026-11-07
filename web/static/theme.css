@@ -175,3 +175,49 @@ not(.theme-toggle):not(.document-bubble):not(.support-send){background:#186596;c
   .theme-toggle{flex:none}
   .columns-picker{grid-template-columns:1fr}
 }
+
+/* Settings view follows the dashboard's light/dark design system. */
+.topbar-controls .view-tabs{gap:2px}
+.topbar-controls .view-tabs .view-tab{padding:8px 12px}
+.config-panel{max-width:none}
+.config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
+.config-card{background:var(--ui-inset);border:1px solid var(--ui-border);border-radius:10px;padding:18px;min-width:0}
+.config-card-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.config-card h3{font-size:15px;line-height:1.25;letter-spacing:-.01em;color:var(--ui-text);margin:0}
+.config-chip{border-radius:30px;border:1px solid var(--ui-border);padding:5px 9px;font-size:10px;line-height:1.2;font-weight:700;color:var(--ui-muted);white-space:nowrap}
+.config-chip.configured{color:#16744e;background:#e4f6ed;border-color:#bce1ce}
+:root[data-theme="dark"] .config-chip.configured{color:#a4ebc2;background:#214735;border-color:#3c7554}
+.config-help{color:var(--ui-muted);font-size:12px;line-height:1.5;margin:8px 0 16px}
+.config-card form{display:flex;flex-direction:column;gap:7px}
+.config-card form label{font-size:12px;font-weight:700;color:var(--ui-text);margin-top:7px}
+.config-card input[type=text],.config-card input[type=password]{
+  width:100%;min-width:0;color:var(--ui-text);background:var(--ui-surface);
+  border:1px solid var(--ui-border);border-radius:8px;
+  padding:11px 12px;font:500 12px/1.35 ui-monospace,monospace;
+}
+.config-card input::placeholder{color:var(--ui-muted);font-weight:400;opacity:.95}
+.config-actions{display:flex;justify-content:flex-end;margin-top:8px}
+.gmail-oauth-actions{display:flex;gap:9px;flex-wrap:wrap;margin:16px 0 12px}
+.gmail-connected-info{padding:11px 13px;margin:10px 0;
+  border:1px solid #bce3d1;border-radius:8px;color:#1c6747;background:#e7f8f0;font-size:12px}
+:root[data-theme="dark"] .gmail-connected-info{
+  background:#204736;color:#abe6c7;border-color:#407458}
+.config-uri{display:block;overflow-wrap:anywhere;background:var(--ui-surface);color:var(--ui-accent-strong);
+  border:1px solid var(--ui-border);border-radius:7px;padding:11px;
+  font:11px/1.5 ui-monospace,monospace}
+.config-panel a{color:var(--ui-accent-strong);text-decoration:underline;text-underline-offset:2px}
+.config-panel code{font-family:ui-monospace,monospace}
+.config-panel .section-head{margin-bottom:14px}
+.config-panel .section-head h2{font-size:17px}
+.config-panel .config-card .field-help{margin:12px 0 0}
+@media(max-width:1050px){.config-grid{grid-template-columns:1fr}}
+@media(max-width:540px){
+  .topbar-controls .view-tabs .view-tab{padding:8px 7px;font-size:10px}
+  .config-card{padding:12px}
+  .config-card-heading{flex-wrap:wrap;align-items:flex-start}
+  .gmail-oauth-actions button{flex:1 1 120px}
+}
+
+/* Keep the remaining viewport in the chosen theme on short settings pages. */
+html{min-height:100%;background:var(--ui-bg)}
+body{min-height:100vh;background:var(--ui-bg)}

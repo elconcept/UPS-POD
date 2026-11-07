@@ -960,3 +960,188 @@ def test_theme_and_configurable_columns_browser(application):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_configuration_masks_credentials_and_persists_env(application, monkeypatch):
+    import config_store
+    import service
+    import worker
+
+    path = service.DATA_DIR / ".env"
+    path.write_text("# preserved comment\nUPS_POD_RETRY_HOURS=3\nclient_id=legacyvalue\n", encoding="utf-8")
+    path.chmod(0o600)
+    assert config_store.get("client_id") == "legacyvalue"
+    with application.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as session:
+            csrf = session["csrf"]
+        headers = {"X-CSRF-Token": csrf}
+        initial = client.get("/api/config")
+        assert initial.status_code == 200
+        assert initial.json["ups_client_id"] != "legacyvalue"
+        saved = client.post("/api/config/ups", json={
+            "client_id": "NewClientID1234567890",
+            "client_secret": "NewSecretUPS12345678"
+        }, headers=headers)
+        assert saved.status_code == 200, saved.json
+        assert "NewSecretUPS12345678" not in saved.get_data(as_text=True)
+        assert "NewClientID1234567890" not in saved.get_data(as_text=True)
+        assert saved.json["ups_client_id"].endswith("7890")
+        assert "•" in saved.json["ups_client_secret"]
+        assert worker.credentials() == ("NewClientID1234567890", "NewSecretUPS12345678")
+        assert (path.stat().st_mode & 0o777) == 0o600
+        text = path.read_text(encoding="utf-8")
+        assert "# preserved comment" in text
+        assert "UPS_POD_RETRY_HOURS=3" in text
+        assert "UPS_CLIENT_SECRET=NewSecretUPS12345678" in text
+
+        # Blank fields preserve existing values rather than resetting credentials.
+        blank = client.post("/api/config/ups", json={
+            "client_id": "", "client_secret": ""
+        }, headers=headers)
+        assert blank.status_code == 200
+        assert worker.credentials()[1] == "NewSecretUPS12345678"
+        invalid = client.post("/api/config/ups", json={
+            "client_id": "good\nMALICIOUS=YES", "client_secret": ""
+        }, headers=headers)
+        assert invalid.status_code == 400
+        assert "MALICIOUS" not in path.read_text(encoding="utf-8")
+        blocked = client.post("/api/config/ups", json={
+            "client_id": "another", "client_secret": ""
+        })
+        assert blocked.status_code == 403
+
+        oauth = client.post("/api/config/google", json={
+            "client_id": "12345-abcdef.apps.googleusercontent.com",
+            "client_secret": "GOCSPX-0123456789abcdef",
+        }, headers=headers)
+        assert oauth.status_code == 200
+        assert oauth.json["gmail"]["oauth_ready"] is True
+        assert oauth.json["gmail"]["configured"] is False
+        assert "GOCSPX-0123456789abcdef" not in oauth.get_data(as_text=True)
+        assert "GOCSPX-0123456789abcdef" in path.read_text(encoding="utf-8")
+        initiated = client.post("/api/config/gmail/start", json={}, headers=headers)
+        assert initiated.status_code == 200, initiated.json
+        from urllib.parse import parse_qs, urlparse
+        url = urlparse(initiated.json["url"])
+        assert url.hostname == "accounts.google.com"
+        query = parse_qs(url.query)
+        assert "gmail.send" in query["scope"][0]
+        assert "gmail.readonly" not in query["scope"][0]
+        assert query["redirect_uri"] == ["https://ups.xlap.pl/api/config/gmail/callback"]
+        with client.session_transaction() as session:
+            expected_state = session["gmail_oauth_state"]
+        assert query["state"] == [expected_state]
+        rejected = client.get("/api/config/gmail/callback?state=wrong&code=unused")
+        assert rejected.status_code == 403
+
+        started = client.post("/api/config/gmail/start", json={}, headers=headers)
+        state = parse_qs(urlparse(started.json["url"]).query)["state"][0]
+        denied = client.get("/api/config/gmail/callback", query_string={
+            "state": state, "error": "access_denied"
+        })
+        assert denied.status_code == 302
+        assert denied.location.endswith("/?config=gmail-denied")
+    # No network OAuth requests or real Gmail messages in this test.
+
+
+def test_support_can_send_via_google_without_smtp(application, monkeypatch):
+    import config_store
+    import gmail_oauth
+    import service
+    import support_mail
+
+    config_store.update({
+        "GOOGLE_OAUTH_CLIENT_ID": "12345-abcdef.apps.googleusercontent.com",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "GOCSPX-0123456789abcdef",
+    })
+    gmail_oauth._atomic_json(gmail_oauth.token_file(), {
+        "email": "verified-gmail-user@gmail.com",
+        "client_hash": gmail_oauth.fingerprint(
+            config_store.get("GOOGLE_OAUTH_CLIENT_ID")),
+        "refresh_token": "fake-refresh-token",
+    })
+    assert gmail_oauth.status()["configured"] is True
+    captured = []
+    def fake_send(message):
+        captured.append(message)
+        return {"id": "gmail-msg-123", "email": "verified-gmail-user@gmail.com"}
+    monkeypatch.setattr(gmail_oauth, "send", fake_send)
+    monkeypatch.delenv("UPS_SUPPORT_SMTP_HOST", raising=False)
+
+    tracking = "1Z004R316805433991"
+    service.add_numbers(tracking)
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET state='retry',delivery_date='20200101',"
+                   "delivery_date_type='RDD',ups_status='Delivery Rescheduled',"
+                   "ups_status_code='X' WHERE tracking=?", (tracking,))
+    sent = support_mail.send_support(tracking)
+    assert sent["sent"] is True and sent["channel"] == "gmail"
+    assert len(captured) == 1
+    assert captured[0]["From"] == "verified-gmail-user@gmail.com"
+    assert captured[0]["To"] == support_mail.OFFICIAL_CONTACT
+    assert "We do not assert that delivery has occurred." in captured[0].get_content()
+    with pytest.raises(support_mail.SupportAlreadySent):
+        support_mail.send_support(tracking)
+    gmail_oauth.disconnect()
+    assert gmail_oauth.status()["configured"] is False
+
+
+def test_config_tab_plain_dates_and_mixed_zip_browser(application):
+    import service
+
+    ready_number = "1Z004R316807294692"
+    missing_number = "1Z004R316805636772"
+    service.add_numbers(ready_number + " " + missing_number)
+    target = service.document_target(ready_number)
+    target.write_bytes(b"%PDF-1.4\nfile with no personal data\n")
+    service.mark_ready(ready_number, "Doręczono", "", str(target), "", "pdf", "sha")
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET ship_date='2026-11-01',"
+                   "delivery_date='20261108',delivery_date_type='SDD' "
+                   "WHERE tracking IN (?,?)", (ready_number, missing_number))
+        db.execute("UPDATE shipments SET state='retry' WHERE tracking=?", (missing_number,))
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page(viewport={"width": 1360, "height": 900})
+            page.goto(f"http://127.0.0.1:{server.server_port}")
+            expect(page.locator("#rows tr")).to_have_count(2)
+            date_text = page.locator(f'#rows tr[data-tracking="{missing_number}"]'
+                                     ' [data-col="delivery_date"]').text_content()
+            assert date_text == "2026-11-08"
+
+            # A missing-only selection must remain usable for FBA/retry but
+            # cannot trigger an empty ZIP download.
+            page.locator(f'#rows tr[data-tracking="{missing_number}"] input[type=checkbox]').check()
+            expect(page.locator("#download-selected")).to_be_disabled()
+            expect(page.locator("#fba-selected")).to_be_enabled()
+            expect(page.locator("#retry-selected")).to_be_enabled()
+
+            page.locator(f'#rows tr[data-tracking="{ready_number}"] input[type=checkbox]').check()
+            expect(page.locator("#download-selected")).to_be_enabled()
+            expect(page.locator("#download-selected")).to_contain_text("1 PDF / 2 wybranych")
+            with page.expect_download() as download_info:
+                page.locator("#download-selected").click()
+            download = download_info.value
+            assert download.suggested_filename == "ups-pod-potwierdzenia.zip"
+            expect(page.locator("#table-notice")).to_contain_text(
+                "Pominięto 1 zaznaczonych przesyłek bez POD")
+
+            page.locator("#tab-config").click()
+            expect(page.locator("#config-panel")).to_be_visible()
+            expect(page.locator("#shipments-panel")).to_be_hidden()
+            expect(page.locator("#logs-panel")).to_be_hidden()
+            expect(page.locator("#ups-config-id")).to_be_visible()
+            expect(page.locator("#gmail-config-id")).to_be_visible()
+            expect(page.locator("#gmail-connect")).to_be_disabled()
+            assert page.locator("#tab-config").get_attribute("aria-selected") == "true"
+            page.locator("#tab-shipments").click()
+            expect(page.locator("#rows tr")).to_have_count(2)
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

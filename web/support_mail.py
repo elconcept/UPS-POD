@@ -15,6 +15,7 @@ from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
 import service
+import gmail_oauth
 
 OFFICIAL_CONTACT = "customer.service@ups.com"
 MAIL_RE = re.compile(r"^[A-Za-z0-9_.+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
@@ -63,6 +64,8 @@ def smtp_config() -> dict[str, str | int]:
 
 
 def configured() -> bool:
+    if gmail_oauth.status()["configured"]:
+        return True
     try:
         smtp_config()
         return True
@@ -88,7 +91,19 @@ def send_support(tracking: str) -> dict:
         raise SupportIneligible("Nieprawidłowy numer UPS.")
     # Validate configuration before creating a case, so unconfigured clicks
     # never reserve an idempotency key.
-    config = smtp_config()
+    gmail = gmail_oauth.status()
+    provider = "gmail" if gmail["configured"] else "smtp"
+    if provider == "gmail":
+        config = {"sender": gmail["email"], "recipient": OFFICIAL_CONTACT}
+    else:
+        try:
+            config = smtp_config()
+        except SupportNotConfigured as exc:
+            if gmail["oauth_ready"]:
+                raise SupportNotConfigured(
+                    "Połącz konto Gmail w zakładce Konfiguracja, aby wysyłać zgłoszenia."
+                ) from exc
+            raise
     with service.connection() as db:
         db.execute("BEGIN IMMEDIATE")
         record = db.execute(
@@ -133,36 +148,44 @@ def send_support(tracking: str) -> dict:
         "Regards,\nUPS-POD shipment administration\n"
     )
     try:
-        context = ssl.create_default_context()
-        if config["security"] == "ssl":
-            connection = smtplib.SMTP_SSL(str(config["host"]), int(config["port"]),
-                                          timeout=20, context=context)
+        if provider == "gmail":
+            gmail_oauth.send(msg)
         else:
-            connection = smtplib.SMTP(str(config["host"]), int(config["port"]), timeout=20)
-        with connection as smtp:
-            smtp.ehlo()
-            if config["security"] == "starttls":
-                smtp.starttls(context=context)
-                smtp.ehlo()
-            if config["user"]:
-                smtp.login(str(config["user"]), str(config["password"]))
-            smtp.send_message(msg)
-    except (OSError, smtplib.SMTPException, TimeoutError) as exc:
-        # After an ambiguous SMTP failure, do not automatically retry: the server
-        # may have accepted DATA before the connection dropped.
+            _send_smtp(config, msg)
+    except (OSError, smtplib.SMTPException, TimeoutError,
+            gmail_oauth.GoogleConfigError) as exc:
+        # After ambiguous failure no automatic retries; Gmail/SMTP may have
+        # accepted the message before the client observed a network error.
         with service.connection() as db:
             db.execute("UPDATE support_cases SET status='uncertain', last_error=? "
                        "WHERE tracking=?", (type(exc).__name__, tracking))
         service.audit("system", "ups_support_send_uncertain", tracking,
                       description=type(exc).__name__)
         raise SupportSendUncertain(
-            "Nie udało się potwierdzić wysyłki SMTP. Sprawdź skrzynkę nadawczą "
-            "przed ponownym zgłoszeniem."
+            "Nie udało się potwierdzić wysyłki. Sprawdź Gmail Wysłane lub "
+            "skrzynkę SMTP przed kolejnym zgłoszeniem."
         ) from exc
     with service.connection() as db:
         db.execute("UPDATE support_cases SET status='sent', sent_at=?, message_id=?,"
                    "last_error='' WHERE tracking=?", (service.utcnow(), reference, tracking))
     service.audit("user", "ups_support_sent", tracking,
-                  description="Wysłano zapytanie do oficjalnej obsługi UPS przez SMTP.")
+                  description="Wysłano zapytanie do obsługi UPS przez " + provider + ".")
     return {"sent": True, "tracking": tracking, "recipient": str(config["recipient"]),
-            "message_id": reference}
+            "message_id": reference, "channel": provider}
+
+
+def _send_smtp(config: dict, msg: EmailMessage) -> None:
+    context = ssl.create_default_context()
+    if config["security"] == "ssl":
+        connection = smtplib.SMTP_SSL(str(config["host"]), int(config["port"]),
+                                      timeout=20, context=context)
+    else:
+        connection = smtplib.SMTP(str(config["host"]), int(config["port"]), timeout=20)
+    with connection as smtp:
+        smtp.ehlo()
+        if config["security"] == "starttls":
+            smtp.starttls(context=context)
+            smtp.ehlo()
+        if config["user"]:
+            smtp.login(str(config["user"]), str(config["password"]))
+        smtp.send_message(msg)

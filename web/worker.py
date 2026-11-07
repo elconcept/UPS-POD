@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import service
+import config_store
 import ups_pod as core
 
 logger = logging.getLogger("ups_pod.worker")
@@ -18,8 +19,7 @@ RETRY_HOURS = max(0.01, float(os.getenv("UPS_POD_RETRY_HOURS", "3")))
 
 def credentials() -> tuple[str, str]:
     # The original company UPS file uses lowercase names; both spellings work.
-    cid = os.getenv("UPS_CLIENT_ID") or os.getenv("client_id") or ""
-    secret = os.getenv("UPS_CLIENT_SECRET") or os.getenv("client_secret") or ""
+    cid, secret = config_store.ups_credentials()
     return cid.strip(), secret.strip()
 
 
@@ -225,10 +225,14 @@ def main() -> None:
     service.audit("worker", "startup", description=f"Odzyskano zadań {recovered}.")
     logger.info("UPS POD worker started. Sequential processing, retry every %s hours.", RETRY_HOURS)
     client = None
+    active_credentials = ("", "")
     backfill_attempted = False
     while True:
         try:
             cid, secret = credentials()
+            if (cid, secret) != active_credentials:
+                client = None
+                active_credentials = (cid, secret)
             if cid and secret:
                 if client is None:
                     client = core.KlientUPS(

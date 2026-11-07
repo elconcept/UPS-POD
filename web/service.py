@@ -332,7 +332,6 @@ LIST_COLUMNS = {
     "tracking": "tracking",
     "ship_date": "COALESCE(NULLIF(ship_date,''),'—')",
     "delivery_date": "CASE WHEN LENGTH(delivery_date)=8 THEN "
-        "(CASE WHEN delivery_date_type='SDD' THEN 'Plan ' ELSE '' END)||"
         "SUBSTR(delivery_date,1,4)||'-'||SUBSTR(delivery_date,5,2)||'-'||"
         "SUBSTR(delivery_date,7,2) ELSE '—' END",
      "weight": "CASE WHEN weight_value='' THEN '—' ELSE "
