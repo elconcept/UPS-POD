@@ -36,6 +36,8 @@ function addCell(tr, text, className = "") {
 function statusInfo(row) {
   if (row.state === "ready") return ["POD pobrany", "ready", "Zarchiwizowano dokument POD"];
   if (row.state === "processing") return ["Pobieranie…", "processing", "Trwa komunikacja z UPS"];
+  if (row.state === "retry" && row.error === "Przesyłka jeszcze niedoręczona.")
+    return ["Oczekuje na doręczenie", "waiting", row.description || row.error];
   if (row.state === "retry") return ["Brak POD / ponowienie", "retry", row.error || "Nie udało się pobrać dokumentu"];
   return ["W kolejce", "queued", "Oczekuje na automatyczne przetworzenie"];
 }
@@ -45,7 +47,7 @@ function renderRows() {
   tbody.replaceChildren();
   if (!rows.length) {
     const tr = document.createElement("tr");
-    addCell(tr, "Brak numerów odpowiadających filtrowi.", "empty").colSpan = 9;
+    addCell(tr, "Brak numerów odpowiadających filtrowi.", "empty").colSpan = 7;
     tbody.append(tr);
   }
   for (const row of rows) {
@@ -55,10 +57,18 @@ function renderRows() {
     tick.type = "checkbox";
     tick.checked = selected.has(row.tracking);
     tick.setAttribute("aria-label", "Zaznacz " + row.tracking);
-    tick.addEventListener("change", () => {
-      if (tick.checked) selected.add(row.tracking);
+    tick.addEventListener("click", (event) => {
+      if (event.shiftKey && tick.checked) {
+        const current = rows.findIndex((item) => item.tracking === row.tracking);
+        const prior = rows.slice(0, current).map((item, index) =>
+          selected.has(item.tracking) ? index : -1).filter((index) => index >= 0);
+        if (prior.length) {
+          for (let index = prior[prior.length - 1]; index <= current; index++)
+            selected.add(rows[index].tracking);
+        } else selected.add(row.tracking);
+      } else if (tick.checked) selected.add(row.tracking);
       else selected.delete(row.tracking);
-      syncSelected();
+      renderRows();
     });
     tickCell.append(tick);
     tr.append(tickCell);
@@ -72,8 +82,19 @@ function renderRows() {
     statusCell.title = row.error || row.description || info[2];
     statusCell.append(tag);
     tr.append(statusCell);
-    const upsCell = addCell(tr, row.ups_status || "—", "ups-status");
-    upsCell.title = row.ups_status_code || row.description || "";
+    const upsCell = document.createElement("td");
+    const upsTag = document.createElement("span");
+    const upsText = row.ups_status || "Bez statusu";
+    upsTag.textContent = upsText;
+    const lowerStatus = upsText.toLocaleLowerCase("pl-PL");
+    const upsKind = /doręczon|dostarczon|delivered/.test(lowerStatus) ? "ready"
+      : /wyjątek|problem|błąd|zwrócon|opóźnion|exception|failed/.test(lowerStatus) ? "retry"
+      : /w drodze|w tranzycie|transport|on the way|in transit/.test(lowerStatus) ? "processing"
+      : "queued";
+    upsTag.className = "status ups-status " + upsKind;
+    upsTag.title = row.ups_status_code || row.description || "";
+    upsCell.append(upsTag);
+    tr.append(upsCell);
     const shipDate = addCell(tr, row.ship_date || "—", "ship-date");
     shipDate.title = {
       manual: "Data podana przez użytkownika / import FBA",
@@ -94,11 +115,6 @@ function renderRows() {
     edit.addEventListener("click", () => void editFba(row));
     fbaCell.append(fbaValue, edit);
     tr.append(fbaCell);
-    const last = row.last_attempt_at ? new Date(row.last_attempt_at).toLocaleString("pl-PL") : "—";
-    const lastCell = addCell(tr, last);
-    lastCell.title = row.state === "retry" && row.next_attempt_at
-      ? "Kolejna próba: " + new Date(row.next_attempt_at).toLocaleString("pl-PL") : "";
-    addCell(tr, row.attempts);
     const doc = document.createElement("td");
     if (row.state === "ready") {
       const link = document.createElement("a");
@@ -107,10 +123,31 @@ function renderRows() {
       link.textContent = "Pobierz PDF";
       doc.append(link);
     } else {
-      const dash = document.createElement("span");
-      dash.className = "muted";
-      dash.textContent = "—";
-      doc.append(dash);
+      const detail = document.createElement("div");
+      detail.className = "document-details";
+      const last = row.last_attempt_at
+        ? new Date(row.last_attempt_at).toLocaleString("pl-PL") : "Jeszcze nie sprawdzano";
+      const next = row.next_attempt_at && row.state === "retry"
+        ? "; następna: " + new Date(row.next_attempt_at).toLocaleString("pl-PL") : "";
+      detail.textContent = "Próby: " + row.attempts + " · ostatnia: " + last + next;
+      if (row.error) {
+        const err = document.createElement("span");
+        err.className = row.error === "Przesyłka jeszcze niedoręczona." ? "muted" : "retry-description";
+        err.textContent = row.error;
+        doc.append(err);
+      }
+      doc.append(detail);
+      const logs = document.createElement("button");
+      logs.type = "button";
+      logs.className = "inline-edit";
+      logs.textContent = "Historia";
+      logs.setAttribute("aria-label", "Historia operacji " + row.tracking);
+      logs.addEventListener("click", () => {
+        $("tab-logs").click();
+        $("logs-tracking").value = row.tracking;
+        void refreshLogs();
+      });
+      doc.append(logs);
     }
     tr.append(doc);
     tbody.append(tr);
@@ -130,6 +167,9 @@ function syncSelected() {
     ? "Pobierz zaznaczone ZIP (" + count + ")" : "Pobierz zaznaczone ZIP";
   $("retry-selected").textContent = count
     ? "Ponów zaznaczone (" + count + ")" : "Ponów zaznaczone";
+  $("fba-selected").textContent = count
+    ? "Przypisz FBA zaznaczonym (" + count + ")" : "Przypisz FBA zaznaczonym";
+  $("fba-selected").disabled = count === 0;
   $("download-selected").disabled = count === 0;
   $("retry-selected").disabled = count === 0;
 }
@@ -168,8 +208,11 @@ $("intake-form").addEventListener("submit", async (event) => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ trackings: raw }),
     });
-    notice("Dodano " + result.added + ", istniejące pominięto: " + result.existing
-      + ", niepoprawnych: " + result.rejected.length + ". Pobieranie trwa w tle.");
+    notice("Dodano " + result.added + ", istniejące: " + result.existing
+      + ", przypisano FBA: " + result.assigned
+      + ", odrzucone fragmenty: " + result.rejected_count
+      + (result.rejected.length ? " (" + result.rejected.slice(0, 8).join(", ") + ")" : "")
+      + ". Pobieranie odbywa się automatycznie.", result.rejected_count > 0);
     $("trackings").value = "";
     offset = 0;
     await refresh();
@@ -242,20 +285,35 @@ $("retry-selected").addEventListener("click", async () => {
 async function editFba(row) {
   const shipment_id = window.prompt("Amazon FBA Shipment ID dla " + row.tracking, row.shipment_id || "");
   if (shipment_id === null) return;
-  const ship_date = window.prompt("Data nadania (RRRR-MM-DD)", row.ship_date || "");
-  if (ship_date === null) return;
-  const replace = Boolean(row.shipment_id && (row.shipment_id !== shipment_id.toUpperCase()
-    || row.ship_date !== ship_date));
-  if (replace && !window.confirm("Zmienić istniejące przypisanie FBA / datę dla " + row.tracking + "?")) return;
+  const replace = Boolean(row.shipment_id && row.shipment_id !== shipment_id.toUpperCase());
+  if (replace && !window.confirm("Zmienić istniejące FBA dla " + row.tracking + "?")) return;
   try {
     await requestJson("/api/fba", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entries: [{ tracking: row.tracking, shipment_id, ship_date }], replace }),
+      body: JSON.stringify({ entries: [{ tracking: row.tracking, shipment_id }], replace }),
     });
-    notice("Zapisano przypisanie FBA i datę dla " + row.tracking + ".");
+    notice("Przypisano FBA dla " + row.tracking + ". Datę nadania pobiera UPS.");
     await refresh();
   } catch (error) { notice(error.message, true); }
 }
+
+$("fba-selected").addEventListener("click", async () => {
+  const shipment_id = window.prompt("Shipment ID dla " + selected.size + " zaznaczonych numerów UPS:");
+  if (shipment_id === null) return;
+  const oldAssignments = rows.filter((row) => selected.has(row.tracking)
+    && row.shipment_id && row.shipment_id !== shipment_id.toUpperCase());
+  if (oldAssignments.length && !window.confirm("Niektóre numery mają już inny FBA. Zastąpić go dla zaznaczonych?")) return;
+  try {
+    const result = await requestJson("/api/fba", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries: [...selected].map((tracking) => ({
+        tracking, shipment_id
+      })), replace: oldAssignments.length > 0 }),
+    });
+    notice("FBA przypisano do " + result.assigned + " numerów UPS.");
+    await refresh();
+  } catch (error) { notice(error.message, true); }
+});
 
 $("fba-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -271,7 +329,11 @@ $("fba-form").addEventListener("submit", async (event) => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
-    status.textContent = "Przypisano trackingów: " + result.assigned + ". Zmieniono: " + result.changed + ".";
+    status.textContent = "Rozpoznano UPS: " + result.submitted_unique
+      + ". Nowe: " + result.added + ". Przypisano FBA: " + result.assigned
+      + ". Odrzucone fragmenty: " + result.rejected_count
+      + (result.rejected.length ? " — " + result.rejected.slice(0, 8).join(", ") : "");
+    status.classList.toggle("error", result.rejected_count > 0);
     $("fba-rows").value = "";
     await refresh();
   } catch (error) { status.textContent = error.message; status.classList.add("error"); }
@@ -290,6 +352,7 @@ async function refreshLogs(older = false) {
   try {
     const params = new URLSearchParams();
     if (older && logBefore) params.set("before", String(logBefore));
+    if ($("logs-tracking").value.trim()) params.set("tracking", $("logs-tracking").value.trim());
     if (logScope === "problems") params.set("levels", "WARNING,ERROR");
     else if (logScope !== "all") params.set("levels", logScope);
     const data = await requestJson("/api/logs?" + params);
@@ -321,6 +384,7 @@ $("tab-shipments").addEventListener("click", () => {
   $("shipments-panel").hidden = false; $("logs-panel").hidden = true;
 });
 $("logs-older").addEventListener("click", () => void refreshLogs(true));
+$("logs-tracking").addEventListener("input", () => { logBefore = 0; void refreshLogs(false); });
 setInterval(() => void refreshLogs(), 7000);
 
 document.querySelectorAll("[data-log-scope]").forEach((button) => {
