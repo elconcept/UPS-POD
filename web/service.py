@@ -52,11 +52,14 @@ def init_db() -> None:
         )
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_due ON shipments(state, next_attempt_at)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_created ON shipments(created_at)")
-        # Recover an interrupted job after a worker restart.
-        db.execute(
-            "UPDATE shipments SET state='retry', next_attempt_at=?, updated_at=? WHERE state='processing'",
-            (utcnow(), utcnow()),
-        )
+
+
+def recover_in_progress() -> int:
+    with connection() as db:
+        return db.execute(
+            "UPDATE shipments SET state='retry', next_attempt_at=?, updated_at=? "
+            "WHERE state='processing'", (utcnow(), utcnow())
+        ).rowcount
 
 
 def parse_tracking_numbers(raw: str) -> tuple[list[str], list[str]]:
