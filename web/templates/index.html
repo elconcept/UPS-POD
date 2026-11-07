@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf }}">
+  <title>UPS POD — archiwum WDT</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+<main class="container">
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">UPS / PROOF OF DELIVERY</div>
+      <h1>Archiwum doręczeń <span>WDT</span></h1>
+      <p>Automatyczne pobieranie i archiwizacja potwierdzeń dostawy przesyłek międzynarodowych.</p>
+    </div>
+    <div class="top-status"><span class="live-dot"></span>Cloudflare Access<br><small>{{ hostname }}</small></div>
+  </header>
+  {% if not credentials %}
+    <div class="alert warning" role="alert">Brak danych UPS w pliku <code>.env</code>. Nowe numery zostaną zapisane, a przetwarzanie rozpocznie się po konfiguracji i restarcie kontenerów.</div>
+  {% endif %}
+  <section class="stats" aria-label="Stan kolejki">
+    <article class="stat"><div>Wszystkie numery</div><strong id="count-total">—</strong></article>
+    <article class="stat good"><div>Potwierdzenia pobrane</div><strong id="count-ready">—</strong></article>
+    <article class="stat"><div>W kolejce / przetwarzanie</div><strong id="count-active">—</strong></article>
+    <article class="stat problem"><div>Do ponowienia</div><strong id="count-retry">—</strong></article>
+  </section>
+  <section class="panel intake">
+    <div class="section-head"><div><h2>Dodaj numery trackingowe</h2><p>Wklej numery oddzielone spacjami, tabulatorami, przecinkami lub nowymi liniami.</p></div></div>
+    <form id="intake-form">
+      <textarea id="trackings" name="trackings" rows="5" spellcheck="false" placeholder="1Z1234567890123456, 1Z9876543210987654&#10;1Z1111111111111111"></textarea>
+      <div class="form-bar"><span>Numery już zapisane będą automatycznie pomijane. Przetwarzanie odbywa się w tle, jeden po drugim.</span>
+        <button type="submit" id="add-btn">Dodaj do kolejki</button></div>
+    </form>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+  </section>
+  <section class="panel">
+    <div class="section-head">
+      <div><h2>Potwierdzenia i statusy</h2><p>Lista jest zapisana w SQLite i aktualizowana automatycznie. Najedź na czerwony status, aby zobaczyć błąd.</p></div>
+      <span class="refresh" id="refresh-status">Odświeżanie co 7 s</span>
+    </div>
+    <div class="actions">
+      <div class="filters" id="filters" role="group" aria-label="Filtry listy">
+        <button class="filter active" data-scope="all" type="button">Wszystkie</button>
+        <button class="filter" data-scope="ready" type="button">Pobrane</button>
+        <button class="filter" data-scope="missing" type="button">Bez POD</button>
+      </div>
+      <input type="search" id="query" placeholder="Szukaj numeru lub błędu…" aria-label="Szukaj" />
+      <button class="secondary" type="button" id="download-selected">Pobierz zaznaczone ZIP</button>
+      <button class="secondary" type="button" id="download-all">Pobierz wszystkie POD ZIP</button>
+      <button class="secondary" type="button" id="retry-selected">Ponów zaznaczone</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th><input type="checkbox" id="select-page" title="Zaznacz widoczne numery"></th>
+          <th>Numer UPS</th><th>Stan</th><th>Ostatnie sprawdzenie</th><th>Próby</th><th>Dokument</th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="6" class="empty">Ładowanie przesyłek…</td></tr></tbody>
+      </table>
+    </div>
+    <footer class="pagination">
+      <span id="page-info">—</span>
+      <div><button class="secondary" type="button" id="prev-page">Poprzednia</button><button class="secondary" type="button" id="next-page">Następna</button></div>
+    </footer>
+  </section>
+  <footer class="page-footer">UPS Tracking API · kolejka sekwencyjna · ponowienie nieudanych prób co 3 godziny · oryginały POD i PDF przechowywane na Synology</footer>
+</main>
+</body>
+</html>
