@@ -12,6 +12,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, se
 from werkzeug.exceptions import HTTPException
 
 import service
+import support_mail
 
 ROOT = Path(__file__).resolve().parent
 HOST = os.getenv("PUBLIC_HOST", "ups.xlap.pl").lower()
@@ -115,7 +116,10 @@ def create_app(testing: bool = False) -> Flask:
         for row in result["rows"]:
             for key in ("pod_path", "received_by", "photo_filename", "delivered_at"):
                 row.pop(key, None)
-        return jsonify(**result, stats=service.stats())
+        return jsonify(**result, stats=service.stats(),
+                       columns=[{"key": key, "label": entry[0], "path": entry[1]}
+                                for key, entry in service.UPS_EXTRA_COLUMNS.items()],
+                       support_configured=support_mail.configured())
 
     @web.get("/api/shipments/<tracking>/photo")
     def package_photo(tracking: str):
@@ -151,6 +155,20 @@ def create_app(testing: bool = False) -> Flask:
             return jsonify(items=service.audit_rows(after, before, levels, tracking_filter))
         except ValueError as exc:
             abort(400, str(exc))
+
+    @web.post("/api/support/<tracking>/send")
+    def send_support(tracking: str):
+        try:
+            result = support_mail.send_support(tracking.upper())
+            return jsonify(result), 200
+        except support_mail.SupportNotConfigured as exc:
+            return jsonify(error=str(exc), code="SMTP_NOT_CONFIGURED"), 503
+        except support_mail.SupportIneligible as exc:
+            return jsonify(error=str(exc), code="INELIGIBLE"), 422
+        except support_mail.SupportAlreadySent as exc:
+            return jsonify(error=str(exc), code="ALREADY_SENT"), 409
+        except support_mail.SupportSendUncertain as exc:
+            return jsonify(error=str(exc), code="SEND_UNCERTAIN"), 502
 
     @web.get("/api/tracking-fields")
     def tracking_fields():

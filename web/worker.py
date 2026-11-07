@@ -204,7 +204,8 @@ def run_once(client: core.KlientUPS | None = None) -> str | None:
             return "retry"
         client = core.KlientUPS(
             os.getenv("UPS_POD_ADRES_API", "https://onlinetools.ups.com"),
-            cid, secret, jezyk="pl_PL", numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
+            cid, secret, jezyk=os.getenv("UPS_TRACKING_LOCALE", "en_US"),
+            numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
         )
     result = process_one(number, client)
     service.audit("worker", result, number)
@@ -232,7 +233,8 @@ def main() -> None:
                 if client is None:
                     client = core.KlientUPS(
                         os.getenv("UPS_POD_ADRES_API", "https://onlinetools.ups.com"),
-                        cid, secret, jezyk="pl_PL", numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
+                        cid, secret, jezyk=os.getenv("UPS_TRACKING_LOCALE", "en_US"),
+            numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
                     )
                 if not backfill_attempted:
                     backfill_attempted = True

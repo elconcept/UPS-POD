@@ -564,10 +564,12 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
             headings = page.locator(
                 "#shipments-table thead tr:first-child .sort-header"
             ).evaluate_all("(nodes) => nodes.map((n) => n.firstChild.textContent)")
-            assert headings == [
+            assert headings[:8] == [
                 "Shipment ID Amazon FBA", "Numer UPS", "Data nadania",
-                "Data doręczenia", "Waga", "Status UPS", "Stan kolejki", "Dokument",
+                "Data doręczenia", "Waga", "Status UPS", "Kolejka", "Dokument",
             ]
+            assert len(headings) == 24
+            expect(page.locator('.column-header[data-col="weight"]')).to_be_hidden()
             link = page.locator(f'#rows tr[data-tracking="{exception}"] td.track a')
             assert link.get_attribute("href") == (
                 "https://www.ups.com/track?tracknum=" + exception
@@ -578,7 +580,7 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
             pill.hover()
             expect(page.locator(".ups-tooltip")).to_be_visible()
             expect(page.locator(".ups-tooltip")).to_contain_text("Nieprawidłowy adres")
-            expect(page.locator(".ups-tooltip")).to_contain_text("Kod UPS: X")
+            expect(page.locator(".ups-tooltip")).to_contain_text("Typ UPS: X")
             assert page.locator(f'#rows tr[data-tracking="{ready}"] .document-bubble').inner_text() == "↓ PDF"
 
             expect(page.locator("#intake-content")).to_be_hidden()
@@ -706,8 +708,14 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
             page.goto(f"http://127.0.0.1:{server.server_port}")
             expect(page.locator("#rows tr")).to_have_count(3)
             header = page.locator("#shipments-table thead tr:first-child")
+            page.locator("#columns-open").click()
+            page.locator('#columns-picker input[type="checkbox"]').nth(4).check()
+            page.locator("#columns-done").click()
             page.locator('.column-header[data-col="weight"] .sort-header').click()
             expect(page.locator('#rows tr').first).to_have_attribute("data-tracking", b)
+            page.locator("#columns-open").click()
+            page.locator('#columns-picker input[type="checkbox"]').nth(4).check()
+            page.locator("#columns-done").click()
             page.locator('.column-header[data-col="weight"] .sort-header').click()
             expect(page.locator('#rows tr').first).to_have_attribute("data-tracking", a)
 
@@ -733,7 +741,7 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
             page.locator("#clear-column-filters").click()
             expect(page.locator("#rows tr")).to_have_count(3)
 
-            page.locator(f'#rows tr[data-tracking="{a}"] .inline-edit').click()
+            page.locator(f'#rows tr[data-tracking="{a}"] .fba-edit-link').click()
             expect(page.locator("#fba-dialog")).to_be_visible()
             page.locator("#fba-dialog-id").fill("FBANEWID")
             page.locator("#fba-save").click()
@@ -743,16 +751,8 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
             expect(page.locator("#fba-dialog")).to_be_hidden()
             expect(page.locator(f'#rows tr[data-tracking="{a}"] .fba-id')).to_have_text("FBANEWID")
 
-            page.locator(f'#rows tr[data-tracking="{a}"] .support-case').click()
-            expect(page.locator("#ups-case-dialog")).to_be_visible()
-            page.locator("#ups-case-form button[type=submit]").click()
-            expect(page.locator("#ups-case-error")).to_contain_text("Podaj źródło")
-            page.locator("#ups-evidence").fill("Potwierdzenie od odbiorcy, 2026-11-05")
-            page.locator("#ups-confirmation").check()
-            page.locator("#ups-case-form button[type=submit]").click()
-            expect(page.locator("#ups-case-draft")).to_have_value(__import__("re").compile(a))
-            expect(page.locator("#ups-case-draft")).to_have_value(__import__("re").compile("korektę danych"))
-            assert "upsemail/input?loc=pl_PL" in page.locator("#ups-official-form").get_attribute("href")
+            page.locator(f'#rows tr[data-tracking="{a}"] .support-send').click()
+            expect(page.locator("#table-notice")).to_contain_text("SMTP")
             browser.close()
     finally:
         server.shutdown()
@@ -774,3 +774,189 @@ def test_startup_skips_repeated_hash_and_glob_for_canonical_pdf(application, mon
     monkeypatch.setattr(service, "sync_named_pdf", refuse_repeated_migration)
     service.init_db()
     assert target.exists()
+
+
+def test_ups_specific_status_and_safe_tracking_columns(application):
+    import service
+    import ups_pod as core
+
+    tracking = "1Z004R316805433991"
+    service.add_numbers(tracking)
+    payload = {"trackResponse": {"shipment": [{
+        "service": {"description": "UPS Express Saver"},
+        "pickupDate": "20261105",
+        "packageCount": 1,
+        "package": [{
+            "trackingNumber": tracking,
+            "currentStatus": {
+                "description": "Delivery Rescheduled", "code": "019",
+                "simplifiedTextDescription": "Your delivery will be rescheduled.",
+            },
+            "activity": [{"status": {"type": "X", "code": "MF",
+                                     "description": "Your delivery will be rescheduled.",
+                                     "statusCode": "019"},
+                          "date": "20261107", "time": "084351"}],
+            "deliveryDate": [{"type": "RDD", "date": "20261119"}],
+            "packageAddress": [{"address": {"addressLine": ["SENSITIVE PRIVATE ADDRESS"]}}],
+            "deliveryInformation": {"receivedBy": "SENSITIVE PERSON"},
+        }],
+    }]}}
+    detail = core.analizuj(200, payload, "")
+    assert detail["status"] == "Delivery Rescheduled"
+    assert detail["status_typ"] == "X"
+    assert detail["event_code"] == "MF"
+    assert detail["status_detail"] == "Your delivery will be rescheduled."
+    service.save_tracking_metadata(tracking, payload)
+    service.save_tracking_detail(tracking, detail)
+    row = service.list_numbers(column_filters={"ups.event_code": "MF"})["rows"][0]
+    assert row["ups_status"] == "Delivery Rescheduled"
+    assert row["ups_status_detail"] == "Your delivery will be rescheduled."
+    assert row["ups_tracking_code"] == "019"
+    assert row["ups_extra"]["ups.status_detail"] == "Your delivery will be rescheduled."
+    assert row["ups_extra"]["ups.service"] == "UPS Express Saver"
+    assert "SENSITIVE" not in repr(row["ups_extra"])
+    assert service.list_numbers(sort_by="ups.activity_date", sort_dir="desc")["total"] == 1
+    with application.test_client() as client:
+        data = client.get("/api/shipments?f_ups.event_code=MF").json
+        assert data["total"] == 1
+        assert len(data["columns"]) >= 10
+        assert data["support_configured"] is False
+        assert "SENSITIVE" not in repr(data)
+
+
+def test_one_click_support_sends_once_without_claiming_delivery(application, monkeypatch):
+    import service
+    import support_mail
+
+    tracking = "1Z004R316805433991"
+    service.add_numbers(tracking)
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET state='retry',delivery_date='20200101',"
+                   "delivery_date_type='SDD',ups_status='Delivery Rescheduled',"
+                   "ups_status_code='X' WHERE tracking=?", (tracking,))
+    for key in ("UPS_SUPPORT_SMTP_HOST", "UPS_SUPPORT_SMTP_FROM"):
+        monkeypatch.delenv(key, raising=False)
+
+    with application.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as session:
+            csrf = session["csrf"]
+        headers = {"X-CSRF-Token": csrf}
+        missing = client.post(f"/api/support/{tracking}/send", json={}, headers=headers)
+        assert missing.status_code == 503
+        assert missing.json["code"] == "SMTP_NOT_CONFIGURED"
+
+        sent = []
+        class FakeSMTP:
+            def __init__(self, *args, **kwargs):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+            def ehlo(self):
+                pass
+            def starttls(self, **kwargs):
+                pass
+            def send_message(self, message):
+                sent.append(message)
+
+        monkeypatch.setenv("UPS_SUPPORT_SMTP_HOST", "smtp.example.test")
+        monkeypatch.setenv("UPS_SUPPORT_SMTP_FROM", "operator@example.test")
+        monkeypatch.setenv("UPS_SUPPORT_TO", "customer.service@ups.com")
+        monkeypatch.setattr(support_mail.smtplib, "SMTP", FakeSMTP)
+        delivered = client.post(f"/api/support/{tracking}/send", json={}, headers=headers)
+        assert delivered.status_code == 200, delivered.json
+        assert delivered.json["sent"]
+        assert delivered.json["recipient"] == "customer.service@ups.com"
+        assert len(sent) == 1
+        assert tracking in sent[0].get_content()
+        assert "We do not assert that delivery has occurred." in sent[0].get_content()
+        assert not sent[0].get_all("Bcc")
+        # No second physical email even on repeated button presses.
+        repeated = client.post(f"/api/support/{tracking}/send", json={}, headers=headers)
+        assert repeated.status_code == 409
+        assert len(sent) == 1
+        rows = client.get("/api/shipments").json["rows"]
+        assert rows[0]["support_status"] == "sent"
+
+        monkeypatch.setenv("UPS_SUPPORT_TO", "attacker@example.test")
+        assert client.get("/api/shipments").json["support_configured"] is False
+        with service.connection() as db:
+            record = db.execute(
+                "SELECT status,message_id FROM support_cases WHERE tracking=?", (tracking,)
+            ).fetchone()
+        assert record["status"] == "sent" and record["message_id"].startswith("<")
+
+
+def test_theme_and_configurable_columns_browser(application):
+    import service
+
+    service.add_numbers("1Z004R316805433991")
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            page.goto(f"http://127.0.0.1:{server.server_port}")
+            expect(page.locator("#rows tr")).to_have_count(1)
+            assert page.evaluate("document.documentElement.dataset.theme") == "light"
+            assert page.locator(".topbar #tab-shipments").count() == 1
+            assert page.locator(".topbar #tab-logs").count() == 1
+            assert page.locator(".topbar .top-status").count() == 0
+            assert page.locator('link[rel="icon"]').get_attribute("href") == "/static/favicon.svg"
+            assert page.request.get(f"http://127.0.0.1:{server.server_port}/static/favicon.svg").status == 200
+            assert page.locator("#rows .queue-dot").count() == 1
+
+            page.locator("#theme-toggle").click()
+            assert page.evaluate("document.documentElement.dataset.theme") == "dark"
+            assert page.evaluate('document.cookie.includes("ups_pod_theme=dark")')
+            dark_background = page.evaluate(
+                "getComputedStyle(document.body).backgroundColor"
+            )
+            panel = page.evaluate(
+                "getComputedStyle(document.querySelector('.panel')).backgroundColor"
+            )
+            assert dark_background != panel
+            page.reload()
+            assert page.evaluate("document.documentElement.dataset.theme") == "dark"
+            page.locator("#theme-toggle").click()
+            assert page.evaluate("document.documentElement.dataset.theme") == "light"
+
+            expect(page.locator('.column-header[data-col="weight"]')).to_be_hidden()
+            expect(page.locator('.column-header[data-col="ups.service"]')).to_be_hidden()
+            page.locator("#columns-open").click()
+            expect(page.locator("#columns-dialog")).to_be_visible()
+            # Match checkbox by row label: available Tracking API keys.
+            service_field = page.locator('.column-choice').filter(
+                has_text="Usługa UPS"
+            ).locator('input[type="checkbox"]')
+            service_field.check()
+            page.locator("#columns-done").click()
+            expect(page.locator('.column-header[data-col="ups.service"]')).to_be_visible()
+            assert page.evaluate('document.cookie.includes("ups_pod_columns_visible=")')
+
+            width_before = page.locator('.column-header[data-col="ups_status"]').evaluate(
+                "(node) => parseFloat(node.style.width)"
+            )
+            handle = page.locator('.column-header[data-col="ups_status"] .column-resize')
+            handle.focus()
+            page.keyboard.press("ArrowRight")
+            width_after = page.locator('.column-header[data-col="ups_status"]').evaluate(
+                "(node) => parseFloat(node.style.width)"
+            )
+            assert width_after == width_before + 10
+            page.reload()
+            expect(page.locator('.column-header[data-col="ups.service"]')).to_be_visible()
+            persisted = page.locator('.column-header[data-col="ups_status"]').evaluate(
+                "(node) => parseFloat(node.style.width)"
+            )
+            assert persisted == width_after
+            page.locator("#rows .fba-edit-link").click()
+            expect(page.locator("#fba-dialog")).to_be_visible()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

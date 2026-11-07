@@ -25,22 +25,64 @@ const savedMonth = getCookie("ups_pod_month");
 let activeMonth = savedMonth === "all" || /^\d{4}-(0[1-9]|1[0-2])$/.test(savedMonth)
   ? savedMonth : monthParts.year + "-" + monthParts.month;
 const PAGE_SIZE = 200;
-const COLUMN_KEYS = [
+const BASE_COLUMNS = [
   "fba", "tracking", "ship_date", "delivery_date", "weight", "ups_status", "queue", "document"
 ];
+// Allowlisted UPS Tracking API paths; values are extracted server-side without
+// returning raw addresses, personal identities, signature, photo or POD data.
+const EXTRA_COLUMNS = [
+  ["ups.service", "Usługa UPS", "shipment.service.description"],
+  ["ups.pickup_date", "Odbiór przez UPS", "shipment.pickupDate"],
+  ["ups.package_count", "Liczba paczek", "shipment.packageCount"],
+  ["ups.status_detail", "Opis statusu", "package.currentStatus.simplifiedTextDescription"],
+  ["ups.status_code", "Kod statusu", "package.currentStatus.code"],
+  ["ups.status_type", "Typ zdarzenia", "package.activity[0].status.type"],
+  ["ups.event_code", "Kod zdarzenia", "package.activity[0].status.code"],
+  ["ups.event_status_code", "Kod skanu", "package.activity[0].status.statusCode"],
+  ["ups.activity_description", "Ostatni skan", "package.activity[0].status.description"],
+  ["ups.activity_date", "Data skanu", "package.activity[0].date"],
+  ["ups.activity_time", "Czas skanu", "package.activity[0].time"],
+  ["ups.delivery_date_type", "Typ daty UPS", "package.deliveryDate[0].type"],
+  ["ups.delivery_time_type", "Typ czasu UPS", "package.deliveryTime.type"],
+  ["ups.delivery_start", "Okno od", "package.deliveryTime.startTime"],
+  ["ups.delivery_end", "Okno do", "package.deliveryTime.endTime"],
+  ["ups.weight_unit", "Jednostka wagi", "package.weight.unitOfMeasurement"],
+];
+const COLUMN_KEYS = [...BASE_COLUMNS, ...EXTRA_COLUMNS.map(([key]) => key)];
 const columnLabels = {
   fba: "Shipment ID Amazon FBA", tracking: "Numer UPS", ship_date: "Data nadania",
   delivery_date: "Data doręczenia", weight: "Waga", ups_status: "Status UPS",
-  queue: "Stan kolejki", document: "Dokument"
+  queue: "Kolejka", document: "Dokument"
 };
-function validateColumnOrder(value) {
-  const parts = value.split(",");
-  return parts.length === COLUMN_KEYS.length
-    && new Set(parts).size === COLUMN_KEYS.length
-    && parts.every((key) => COLUMN_KEYS.includes(key));
+for (const [key, label] of EXTRA_COLUMNS) columnLabels[key] = label;
+const DEFAULT_VISIBLE = BASE_COLUMNS.filter((key) => key !== "weight");
+const DEFAULT_WIDTHS = {
+  fba: 215, tracking: 178, ship_date: 119, delivery_date: 146,
+  weight: 95, ups_status: 156, queue: 62, document: 126
+};
+for (const [key] of EXTRA_COLUMNS) DEFAULT_WIDTHS[key] = 144;
+function validKeys(value) {
+  return Array.isArray(value) && value.length && new Set(value).size === value.length
+    && value.every((key) => COLUMN_KEYS.includes(key));
 }
-const savedOrder = getCookie("ups_pod_column_order");
-let columnOrder = validateColumnOrder(savedOrder) ? savedOrder.split(",") : [...COLUMN_KEYS];
+function readJsonCookie(key) {
+  try { return JSON.parse(getCookie(key) || "null"); } catch { return null; }
+}
+const priorOrder = getCookie("ups_pod_column_order").split(",").filter(Boolean);
+let columnOrder = validKeys(priorOrder) && BASE_COLUMNS.every((key) => priorOrder.includes(key))
+  ? [...priorOrder, ...COLUMN_KEYS.filter((key) => !priorOrder.includes(key))]
+  : [...COLUMN_KEYS];
+const priorVisible = readJsonCookie("ups_pod_columns_visible");
+let visibleColumns = new Set(validKeys(priorVisible) ? priorVisible : DEFAULT_VISIBLE);
+const savedWidths = readJsonCookie("ups_pod_column_widths");
+let columnWidths = { ...DEFAULT_WIDTHS };
+if (savedWidths && typeof savedWidths === "object") {
+  for (const key of COLUMN_KEYS) {
+    const value = savedWidths[key];
+    if (Number.isFinite(value) && value >= 45 && value <= 700)
+      columnWidths[key] = Math.round(value);
+  }
+}
 let sortBy = COLUMN_KEYS.includes(getCookie("ups_pod_sort"))
   ? getCookie("ups_pod_sort") : "ship_date";
 let sortDirection = ["asc", "desc"].includes(getCookie("ups_pod_sort_direction"))
@@ -54,13 +96,38 @@ try {
     }
   }
 } catch { columnFilters = {}; }
+let supportConfigured = false;
 let refreshSerial = 0;
 const $ = (id) => document.getElementById(id);
 
 function saveColumnPrefs() {
   saveCookie("ups_pod_column_order", columnOrder.join(","));
+  saveCookie("ups_pod_columns_visible", JSON.stringify([...visibleColumns]));
+  saveCookie("ups_pod_column_widths", JSON.stringify(columnWidths));
   saveCookie("ups_pod_sort", sortBy);
   saveCookie("ups_pod_sort_direction", sortDirection);
+}
+function applyColumnWidths() {
+  const table = $("shipments-table");
+  const visibleWidth = columnOrder.filter((key) => visibleColumns.has(key))
+    .reduce((sum, key) => sum + columnWidths[key], 0);
+  table.style.width = Math.max(visibleWidth, 300) + "px";
+  table.style.minWidth = Math.max(visibleWidth, 300) + "px";
+  for (const cell of table.querySelectorAll("[data-col]")) {
+    const key = cell.dataset.col;
+    if (!COLUMN_KEYS.includes(key)) continue;
+    const width = columnWidths[key];
+    cell.style.width = width + "px";
+    cell.style.minWidth = width + "px";
+    cell.style.maxWidth = width + "px";
+    const shown = visibleColumns.has(key);
+    cell.hidden = !shown;
+    cell.classList.toggle("column-hidden", !shown);
+  }
+  for (const resize of table.querySelectorAll(".column-resize")) {
+    const key = resize.closest("[data-col]")?.dataset.col;
+    if (key) resize.setAttribute("aria-valuenow", String(columnWidths[key]));
+  }
 }
 function applyColumnOrder() {
   const table = $("shipments-table");
@@ -80,8 +147,10 @@ function applyColumnOrder() {
     th.setAttribute("aria-sort", key !== sortBy ? "none"
       : sortDirection === "asc" ? "ascending" : "descending");
     const direction = th.querySelector(".sort-indicator");
-    direction.textContent = key === sortBy ? (sortDirection === "asc" ? "↑" : "↓") : "↕";
+    if (direction)
+      direction.textContent = key === sortBy ? (sortDirection === "asc" ? "↑" : "↓") : "↕";
   }
+  applyColumnWidths();
 }
 function moveColumn(dragged, target) {
   if (!COLUMN_KEYS.includes(dragged) || !COLUMN_KEYS.includes(target) || dragged === target) return;
@@ -91,12 +160,55 @@ function moveColumn(dragged, target) {
   saveColumnPrefs();
   applyColumnOrder();
 }
+function buildColumnPicker() {
+  const target = $("columns-picker");
+  if (!target) return;
+  target.replaceChildren();
+  for (const group of [
+    { title: "Podstawowe", fields: BASE_COLUMNS },
+    { title: "UPS Tracking API", fields: EXTRA_COLUMNS.map(([key]) => key) }
+  ]) {
+    const heading = document.createElement("h3");
+    heading.textContent = group.title;
+    target.append(heading);
+    for (const key of group.fields) {
+      const label = document.createElement("label");
+      label.className = "column-choice";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = visibleColumns.has(key);
+      const span = document.createElement("span");
+      span.textContent = columnLabels[key];
+      const path = EXTRA_COLUMNS.find(([candidate]) => candidate === key)?.[2];
+      if (path) {
+        const help = document.createElement("small");
+        help.textContent = path;
+        span.append(help);
+      }
+      input.addEventListener("change", () => {
+        if (input.checked) visibleColumns.add(key);
+        else if (visibleColumns.size > 1) visibleColumns.delete(key);
+        else { input.checked = true; return; }
+        saveColumnPrefs();
+        applyColumnWidths();
+      });
+      label.append(input, span);
+      target.append(label);
+    }
+  }
+}
 function initColumns() {
   const header = $("shipments-table").tHead.rows[0];
   const filterRow = document.createElement("tr");
   filterRow.className = "column-filters";
   filterRow.setAttribute("aria-label", "Filtry poszczególnych kolumn");
   let dragging = "";
+  for (const [key, label] of EXTRA_COLUMNS) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    th.title = EXTRA_COLUMNS.find(([candidate]) => candidate === key)?.[2] || "";
+    header.append(th);
+  }
   [...header.cells].forEach((th, index) => {
     const key = COLUMN_KEYS[index];
     th.dataset.col = key;
@@ -189,6 +301,49 @@ function initColumns() {
       }
     });
     th.append(drag);
+    const resize = document.createElement("span");
+    resize.className = "column-resize";
+    resize.setAttribute("role", "separator");
+    resize.tabIndex = 0;
+    resize.setAttribute("aria-orientation", "vertical");
+    resize.setAttribute("aria-label", "Zmień szerokość: " + columnLabels[key]);
+    resize.setAttribute("aria-valuemin", "45");
+    resize.setAttribute("aria-valuemax", "700");
+    resize.title = "Przeciągnij, aby zmienić szerokość; strzałki na klawiaturze";
+    let resizing = null;
+    resize.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      resizing = { pointer: event.pointerId, startX: event.clientX, width: columnWidths[key] };
+      resize.setPointerCapture(event.pointerId);
+      th.classList.add("resizing-column");
+    });
+    resize.addEventListener("pointermove", (event) => {
+      if (!resizing || resizing.pointer !== event.pointerId) return;
+      columnWidths[key] = Math.min(700, Math.max(45,
+        Math.round(resizing.width + event.clientX - resizing.startX)));
+      applyColumnWidths();
+    });
+    const finishResize = () => {
+      if (!resizing) return;
+      resizing = null;
+      th.classList.remove("resizing-column");
+      saveColumnPrefs();
+    };
+    resize.addEventListener("pointerup", finishResize);
+    resize.addEventListener("pointercancel", finishResize);
+    resize.addEventListener("dblclick", () => {
+      columnWidths[key] = DEFAULT_WIDTHS[key]; applyColumnWidths(); saveColumnPrefs();
+    });
+    resize.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation();
+      const delta = event.key === "ArrowRight" ? 10 : -10;
+      columnWidths[key] = Math.min(700, Math.max(45, columnWidths[key] + delta));
+      applyColumnWidths(); saveColumnPrefs();
+    });
+    th.append(resize);
     th.addEventListener("dragover", (event) => {
       if (!dragging) return;
       event.preventDefault();
@@ -226,6 +381,7 @@ function initColumns() {
   });
   header.after(filterRow);
   applyColumnOrder();
+  buildColumnPicker();
 }
 
 
@@ -288,7 +444,7 @@ function renderRows() {
   tbody.replaceChildren();
   if (!rows.length) {
     const tr = document.createElement("tr");
-    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = 8;
+    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = visibleColumns.size;
     tbody.append(tr);
   }
   for (const row of rows) {
@@ -314,16 +470,14 @@ function renderRows() {
     // Data columns: FBA, UPS, ship date, delivery date, weight, UPS status, queue, document.
     const fbaCell = document.createElement("td");
     fbaCell.className = "fba-cell";
-    const fbaValue = document.createElement("span");
+    const fbaValue = document.createElement("button");
+    fbaValue.type = "button";
     fbaValue.textContent = row.shipment_id || "Nieprzypisany";
-    fbaValue.className = row.shipment_id ? "fba-id" : "muted";
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "inline-edit";
-    edit.textContent = "Edytuj";
-    edit.setAttribute("aria-label", "Edytuj Shipment ID Amazon FBA dla " + row.tracking);
-    edit.addEventListener("click", () => void editFba(row));
-    fbaCell.append(tick, fbaValue, edit);
+    fbaValue.className = "fba-edit-link " + (row.shipment_id ? "fba-id" : "muted");
+    fbaValue.title = "Kliknij, aby edytować Shipment ID Amazon FBA";
+    fbaValue.setAttribute("aria-label", "Edytuj FBA dla " + row.tracking);
+    fbaValue.addEventListener("click", () => editFba(row));
+    fbaCell.append(tick, fbaValue);
     tr.append(fbaCell);
 
     const trackCell = document.createElement("td");
@@ -349,10 +503,11 @@ function renderRows() {
     const deliveryDay = row.delivery_date && /^\d{8}$/.test(row.delivery_date)
       ? row.delivery_date.slice(0, 4) + "-" + row.delivery_date.slice(4, 6)
         + "-" + row.delivery_date.slice(6) : "—";
-    const isPlannedDate = row.delivery_date_type === "SDD" && deliveryDay !== "—";
+    const isPlannedDate = ["SDD", "RDD"].includes(row.delivery_date_type) && deliveryDay !== "—";
     const dateCell = addCell(tr, isPlannedDate ? "Plan " + deliveryDay : deliveryDay,
       "delivery-date" + (isPlannedDate ? " planned" : ""));
     dateCell.title = row.delivery_date_type === "DEL" ? "Potwierdzona data doręczenia"
+      : row.delivery_date_type === "RDD" ? "Nowy termin dostawy (RDD)"
       : row.delivery_date_type === "SDD" ? "Planowana data dostawy (SDD)"
       : row.delivery_date_type || "Brak informacji";
 
@@ -366,38 +521,47 @@ function renderRows() {
     const upsText = row.ups_status || "Bez statusu";
     upsTag.textContent = upsText;
     const lowerStatus = upsText.toLocaleLowerCase("pl-PL");
-    const upsKind = /doręczon|dostarczon|delivered/.test(lowerStatus) ? "ready"
-      : /wyjątek|problem|błąd|zwrócon|opóźnion|exception|failed/.test(lowerStatus) ? "retry"
-      : /w drodze|w tranzycie|transport|on the way|in transit/.test(lowerStatus) ? "processing"
-      : "queued";
+    const upsKind = row.ups_status_code === "D" || /doręczon|dostarczon|delivered/.test(lowerStatus)
+      ? "ready"
+      : row.ups_status_code === "X" || /wyjątek|problem|błąd|rescheduled|delay|exception|failed/.test(lowerStatus)
+      ? "retry" : /w drodze|w tranzycie|transport|on the way|in transit/.test(lowerStatus)
+      ? "processing" : "queued";
     upsTag.className = "status ups-status " + upsKind;
-    const statusDetails = [upsText,
-      row.ups_status_code ? "Kod UPS: " + row.ups_status_code : "",
-      row.description && row.description !== upsText ? row.description : "",
-      row.error && row.error !== row.description ? row.error : ""].filter(Boolean).join(" · ");
+    const statusDetails = [
+      upsText,
+      row.ups_status_detail && row.ups_status_detail !== upsText ? row.ups_status_detail : "",
+      row.ups_status_code ? "Typ UPS: " + row.ups_status_code : "",
+      row.ups_tracking_code ? "Status: " + row.ups_tracking_code : "",
+      row.ups_event_code ? "Zdarzenie: " + row.ups_event_code : "",
+      row.description && row.description !== upsText && row.description !== row.ups_status_detail
+        ? row.description : "",
+    ].filter(Boolean).join(" · ");
     upsTag.dataset.tooltip = statusDetails;
     upsTag.setAttribute("aria-label", statusDetails);
-    upsTag.setAttribute("tabindex", "0");
+    upsTag.tabIndex = 0;
     upsCell.append(upsTag);
-    if (isPastDeliveryDate(row)) {
-      const support = document.createElement("button");
-      support.type = "button";
-      support.className = "support-case";
-      support.textContent = "Wyjaśnij z UPS";
-      support.title = "Przygotuj zgłoszenie po potwierdzeniu fizycznego doręczenia";
-      support.addEventListener("click", () => openSupportCase(row));
-      upsCell.append(support);
-    }
     tr.append(upsCell);
 
     const statusCell = document.createElement("td");
-    const tag = document.createElement("span");
+    statusCell.className = "compact-queue";
+    const queueTag = document.createElement("span");
     const info = statusInfo(row);
-    tag.className = "status " + info[1];
-    tag.textContent = info[0];
-    tag.title = info[2];
-    statusCell.title = row.error || row.description || info[2];
-    statusCell.append(tag);
+    const late = isPastDeliveryDate(row);
+    const queueKind = row.state === "ready" ? "done"
+      : row.state === "processing" ? "in-progress"
+      : late ? "exception"
+      : row.state === "retry" && info[1] === "retry" ? "error"
+      : "queued";
+    const queueLabel = {
+      done: "POD pobrany", "in-progress": "Przetwarzanie",
+      exception: "Przekroczony termin, brak potwierdzenia",
+      error: "Błąd przetwarzania", queued: "W kolejce"
+    }[queueKind];
+    queueTag.className = "queue-dot " + queueKind;
+    queueTag.setAttribute("role", "img");
+    queueTag.setAttribute("aria-label", queueLabel);
+    queueTag.title = queueLabel + " · " + (row.error || row.description || info[2]);
+    statusCell.append(queueTag);
     tr.append(statusCell);
 
     const doc = document.createElement("td");
@@ -411,6 +575,29 @@ function renderRows() {
       link.setAttribute("aria-label", "Pobierz PDF potwierdzenia doręczenia " + row.tracking);
       link.title = "Pobierz potwierdzenie doręczenia (PDF)";
       doc.append(link);
+    } else if (isPastDeliveryDate(row) && row.support_status === "sent") {
+      const sent = document.createElement("span");
+      sent.className = "status ready support-sent";
+      sent.textContent = "E-mail wysłany";
+      sent.title = "Serwer SMTP przyjął wiadomość. UPS nie potwierdził jeszcze jej odbioru.";
+      doc.append(sent);
+    } else if (isPastDeliveryDate(row) && ["pending", "uncertain"].includes(row.support_status)) {
+      const pending = document.createElement("span");
+      pending.className = "status waiting support-sent";
+      pending.textContent = "Weryfikuj";
+      pending.title = "Nie ponawiaj automatycznie — zweryfikuj, czy poprzednia wiadomość dotarła";
+      doc.append(pending);
+    } else if (isPastDeliveryDate(row)) {
+      const support = document.createElement("button");
+      support.type = "button";
+      support.className = "status document-bubble support-send";
+      support.textContent = "Zgłoś UPS";
+      support.title = supportConfigured
+        ? "Wyślij do oficjalnej obsługi UPS zapytanie o brak skanu doręczenia"
+        : "Wysyłka wymaga skonfigurowanego serwera SMTP na Synology";
+      support.dataset.tracking = row.tracking;
+      support.addEventListener("click", () => void sendUpsSupport(row, support));
+      doc.append(support);
     } else {
       const last = row.last_attempt_at
         ? new Date(row.last_attempt_at).toLocaleString("pl-PL") : "Nie sprawdzano";
@@ -429,6 +616,11 @@ function renderRows() {
       doc.append(bubble);
     }
     tr.append(doc);
+    for (const [key, label] of EXTRA_COLUMNS) {
+      const value = (row.ups_extra || {})[key] || "—";
+      const cell = addCell(tr, value, "extra-cell");
+      cell.title = label + ": " + value;
+    }
     [...tr.cells].forEach((cell, index) => { cell.dataset.col = COLUMN_KEYS[index]; });
     tbody.append(tr);
   }
@@ -497,6 +689,7 @@ async function refresh() {
     if (serial !== refreshSerial) return;
     rows = payload.rows;
     total = payload.total;
+    supportConfigured = payload.support_configured === true;
     const selector = $("month-filter");
     const available = [...new Set([activeMonth, ...(payload.months || [])])]
       .filter((m) => /^\d{4}-\d{2}$/.test(m)).sort().reverse();
@@ -543,7 +736,33 @@ document.querySelectorAll("[data-scope]").forEach((button) => {
   button.classList.toggle("active", button.dataset.scope === scope);
 });
 
+function updateThemeButton() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  $("theme-symbol").textContent = dark ? "☀" : "☾";
+  $("theme-caption").textContent = dark ? "Jasny" : "Ciemny";
+  $("theme-toggle").setAttribute("aria-pressed", String(dark));
+  $("theme-toggle").setAttribute("aria-label", dark ? "Włącz tryb jasny" : "Włącz tryb ciemny");
+}
+$("theme-toggle").addEventListener("click", () => {
+  document.documentElement.dataset.theme =
+    document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  saveCookie("ups_pod_theme", document.documentElement.dataset.theme);
+  updateThemeButton();
+});
+updateThemeButton();
+
 initColumns();
+$("columns-open").addEventListener("click", () => {
+  buildColumnPicker();
+  $("columns-dialog").showModal();
+});
+$("columns-done").addEventListener("click", () => $("columns-dialog").close());
+$("columns-reset").addEventListener("click", () => {
+  columnOrder = [...COLUMN_KEYS];
+  visibleColumns = new Set(DEFAULT_VISIBLE);
+  columnWidths = { ...DEFAULT_WIDTHS };
+  saveColumnPrefs(); applyColumnOrder(); buildColumnPicker();
+});
 $("clear-column-filters").addEventListener("click", () => {
   columnFilters = {};
   document.querySelectorAll(".column-filter").forEach((input) => { input.value = ""; });
@@ -731,70 +950,37 @@ $("fba-dialog-form").addEventListener("submit", async (event) => {
 document.querySelectorAll("[data-close-dialog]").forEach((button) =>
   button.addEventListener("click", () => $(button.dataset.closeDialog).close()));
 
-let supportCase = null;
+async function sendUpsSupport(row, button) {
+  button.disabled = true;
+  button.textContent = "Wysyłanie…";
+  try {
+    const result = await requestJson("/api/support/" + encodeURIComponent(row.tracking) + "/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    tableNotice("Serwer SMTP przyjął wiadomość dla " + row.tracking
+      + " skierowaną do " + result.recipient + ". Odbiór przez UPS nie jest jeszcze potwierdzony.");
+    await refresh();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Zgłoś UPS";
+    tableNotice(row.tracking + ": " + error.message, true);
+  }
+}
+
 const WarsawDate = () => Object.fromEntries(
   new Intl.DateTimeFormat("en-GB", {
     timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit", day: "2-digit"
   }).formatToParts(new Date()).map((item) => [item.type, item.value]));
 function isPastDeliveryDate(row) {
-  if (row.state === "ready" || row.delivery_date_type !== "SDD"
+  if (row.state === "ready" || row.ups_status_code === "D"
+      || /^(delivered|doręczono)/i.test(row.ups_status || "")
+      || !["SDD", "RDD"].includes(row.delivery_date_type)
       || !/^\d{8}$/.test(row.delivery_date || "")) return false;
   const now = WarsawDate();
   const today = now.year + now.month + now.day;
   return row.delivery_date < today;
 }
-function openSupportCase(row) {
-  supportCase = row;
-  $("ups-case-caption").textContent = row.tracking
-    + " · planowana data doręczenia " + (row.delivery_date || "—");
-  $("ups-evidence").value = "";
-  $("ups-confirmation").checked = false;
-  $("ups-case-error").hidden = true;
-  $("ups-case-result").hidden = true;
-  $("ups-case-dialog").showModal();
-  $("ups-evidence").focus();
-}
-$("ups-case-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  if (!supportCase) return;
-  const evidence = $("ups-evidence").value.trim();
-  if (!evidence || !$("ups-confirmation").checked) {
-    $("ups-case-error").textContent = "Podaj źródło i potwierdź fizyczny odbiór przesyłki.";
-    $("ups-case-error").hidden = false;
-    return;
-  }
-  $("ups-case-error").hidden = true;
-  const row = supportCase;
-  $("ups-case-draft").value = [
-    "Temat: Prośba o weryfikację doręczenia i uzupełnienie statusu UPS – " + row.tracking,
-    "",
-    "Dzień dobry,",
-    "Proszę o sprawdzenie historii przesyłki " + row.tracking + ".",
-    "W systemie śledzenia UPS status: " + (row.ups_status || "brak statusu") + ".",
-    "Data planowanego doręczenia według UPS: " + (row.delivery_date || "brak") + ".",
-    "Otrzymaliśmy niezależną informację o fizycznym odbiorze:",
-    evidence,
-    "",
-    "Proszę o weryfikację tego zdarzenia, wyjaśnienie braku skanu doręczenia,",
-    "odpowiednią korektę danych trackingowych po stronie UPS, o ile dostawa zostanie",
-    "potwierdzona w Państwa dokumentacji, oraz udostępnienie Proof of Delivery.",
-    "Proszę też o numer sprawy, jeśli niezbędne będzie dodatkowe wyjaśnienie.",
-    "",
-    "Z poważaniem"
-  ].join("\n");
-  $("ups-case-result").hidden = false;
-  $("ups-case-draft").focus();
-});
-$("ups-copy").addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText($("ups-case-draft").value);
-    $("ups-copy").textContent = "Skopiowano";
-  } catch {
-    $("ups-case-draft").select();
-    $("ups-copy").textContent = "Zaznaczono — skopiuj tekst";
-  }
-});
-
 
 void refresh();
 setInterval(() => void refresh(), 7000);

@@ -6,7 +6,7 @@ COPY requirements-web.txt /app/
 RUN python -m pip install --no-cache-dir -r requirements-web.txt
 COPY UPS_POD/ups_pod.py /app/ups_pod.py
 COPY ups_web/ups-logo.svg /app/ups-logo.svg
-COPY web/app.py web/service.py web/worker.py web/supervisor.py /app/
+COPY web/app.py web/service.py web/support_mail.py web/worker.py web/supervisor.py /app/
 COPY web/templates/ /app/templates/
 COPY web/static/ /app/static/
 RUN useradd --uid 1031 --gid 100 --no-create-home --shell /usr/sbin/nologin upspod

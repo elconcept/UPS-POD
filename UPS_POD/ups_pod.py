@@ -281,6 +281,7 @@ def analizuj(kod, js, tekst):
     w = {'ok': False, 'nie_znaleziono': False, 'blad': '', 'doreczono': False, 'opis': '',
          'pod': None, 'pod_typ': '', 'podpis': False, 'relacja': [], 'data_dor': '', 'godz_dor': '',
          'odebral': '', 'miejsce': '', 'status': '', 'status_typ': '',
+         'status_detail': '', 'event_code': '', 'status_code': '',
          'ship_date': '', 'ship_date_source': ''}
     if kod == 200 and isinstance(js, dict) and 'trackResponse' in js:
         shipy = (js.get('trackResponse') or {}).get('shipment') or []
@@ -301,11 +302,18 @@ def analizuj(kod, js, tekst):
         typ = str(cs.get('type') or st0.get('type') or '').upper()
         w['doreczono'] = typ == 'D' or str(st0.get('type', '')).upper() == 'D' or del_data is not None
         w['status_typ'] = typ
-        w['status'] = {'D': 'Doręczono', 'I': 'W drodze', 'M': 'Etykieta utworzona',
-                       'MV': 'Etykieta anulowana', 'X': 'Wyjątek w doręczeniu',
-                       'U': 'Aktualizacja terminu'}.get(typ, '')
-        w['opis'] = str(cs.get('description') or cs.get('simplifiedTextDescription') or st0.get('description')
-                        or p.get('statusDescription') or 'Brak opisu statusu').strip()
+        # Preserve UPS's specific human-readable event, not only its generic type
+        # (X = exception, e.g. 'Delivery Rescheduled').
+        w['status'] = str(cs.get('description') or st0.get('description') or
+                          cs.get('simplifiedTextDescription') or
+                          p.get('statusDescription') or
+                          {'D': 'Doręczono', 'I': 'W drodze', 'X': 'Wyjątek w doręczeniu'}
+                          .get(typ, 'Brak statusu')).strip()[:150]
+        w['status_detail'] = str(cs.get('simplifiedTextDescription') or
+                                 st0.get('description') or '').strip()[:450]
+        w['event_code'] = str(st0.get('code') or '').strip()[:30]
+        w['status_code'] = str(cs.get('code') or st0.get('statusCode') or '').strip()[:30]
+        w['opis'] = w['status_detail'] or w['status']
         di = p.get('deliveryInformation') or {}
         w['odebral'] = di.get('receivedBy') or ''
         w['miejsce'] = di.get('location') or ''

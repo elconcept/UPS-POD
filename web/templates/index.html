@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="csrf-token" content="{{ csrf }}">
   <title>ElectroSmart UPS-POD</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+  <script src="{{ url_for('static', filename='theme-init.js') }}"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='theme.css') }}">
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
 <body>
@@ -16,15 +19,20 @@
       <h1>ElectroSmart <span>UPS-POD</span></h1>
       <p>Automatyczne pobieranie i archiwizacja potwierdzeń dostawy przesyłek międzynarodowych.</p>
     </div>
-    <div class="top-status"><span class="live-dot"></span>Cloudflare Access<br><small>{{ hostname }}</small></div>
+    <div class="topbar-controls">
+      <nav class="view-tabs" aria-label="Widoki aplikacji" role="tablist">
+        <button class="view-tab active" id="tab-shipments" type="button" role="tab" aria-selected="true" aria-controls="shipments-panel">Przesyłki</button>
+        <button class="view-tab" id="tab-logs" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="logs-panel">Dziennik operacji</button>
+      </nav>
+      <button type="button" id="theme-toggle" class="theme-toggle" aria-pressed="false"
+        aria-label="Włącz tryb ciemny" title="Przełącz tryb kolorystyczny">
+        <span id="theme-symbol" aria-hidden="true">☾</span><span id="theme-caption">Ciemny</span>
+      </button>
+    </div>
   </header>
   {% if not credentials %}
     <div class="alert warning" role="alert">Brak danych UPS w pliku <code>.env</code>. Nowe numery zostaną zapisane, a przetwarzanie rozpocznie się po konfiguracji i restarcie kontenerów.</div>
   {% endif %}
-  <nav class="view-tabs" aria-label="Widoki aplikacji" role="tablist">
-    <button class="view-tab active" id="tab-shipments" type="button" role="tab" aria-selected="true" aria-controls="shipments-panel">Przesyłki</button>
-    <button class="view-tab" id="tab-logs" type="button" role="tab" aria-selected="false" tabindex="-1" aria-controls="logs-panel">Dziennik operacji</button>
-  </nav>
   <section id="logs-panel" class="panel" role="tabpanel" aria-labelledby="tab-logs" hidden>
   <button id="logs-return" class="secondary logs-return" type="button" hidden>← Wróć do miejsca na liście przesyłek</button>
   <h2>Dziennik operacji</h2>
@@ -86,6 +94,8 @@
       <button class="secondary" type="button" id="retry-selected">Ponów zaznaczone</button>
       <button class="secondary" type="button" id="fba-selected">Przypisz FBA zaznaczonym</button>
       <button class="secondary" type="button" id="clear-column-filters">Wyczyść filtry kolumn</button>
+      <button class="secondary" type="button" id="columns-open" aria-haspopup="dialog"
+        aria-controls="columns-dialog">Kolumny <span aria-hidden="true">⚙</span></button>
       </div>
     </div>
     <div class="table-wrap">
@@ -102,6 +112,19 @@
     </footer>
   </section>
   </div>
+  <dialog id="columns-dialog" class="data-dialog columns-dialog"
+    aria-labelledby="columns-dialog-title">
+    <div class="dialog-head"><div>
+      <h2 id="columns-dialog-title">Dostosuj kolumny</h2>
+      <p>Włącz pola UPS API, przesuń kolumny za uchwyt albo zmień ich szerokość.</p>
+    </div><button type="button" class="icon-close" data-close-dialog="columns-dialog" aria-label="Zamknij">×</button></div>
+    <div id="columns-picker" class="columns-picker" role="group"
+      aria-label="Widoczność kolumn"></div>
+    <div class="dialog-actions">
+      <button class="secondary" id="columns-reset" type="button">Przywróć układ domyślny</button>
+      <button type="button" id="columns-done">Gotowe</button>
+    </div>
+  </dialog>
   <dialog id="fba-dialog" class="data-dialog" aria-labelledby="fba-dialog-title">
     <form id="fba-dialog-form" novalidate>
       <div class="dialog-head"><div><h2 id="fba-dialog-title">Przypisz Shipment ID Amazon FBA</h2>
@@ -117,30 +140,6 @@
       <p id="fba-dialog-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-actions"><button type="button" class="secondary" data-close-dialog="fba-dialog">Anuluj</button>
       <button type="submit" id="fba-save">Zapisz przypisanie</button></div>
-    </form>
-  </dialog>
-  <dialog id="ups-case-dialog" class="data-dialog" aria-labelledby="ups-case-title">
-    <form id="ups-case-form" novalidate>
-      <div class="dialog-head"><div><h2 id="ups-case-title">Wyjaśnienie doręczenia w UPS</h2>
-        <p id="ups-case-caption"></p></div>
-        <button type="button" class="icon-close" data-close-dialog="ups-case-dialog" aria-label="Zamknij">×</button></div>
-      <p class="field-help">Sama przekroczona data przewidywanej dostawy nie potwierdza doręczenia.
-        Zgłoszenie przygotuj dopiero po uzyskaniu niezależnej informacji o fizycznym odbiorze.</p>
-      <label class="field-label" for="ups-evidence">Źródło potwierdzenia fizycznego odbioru</label>
-      <textarea id="ups-evidence" rows="3" placeholder="Np. potwierdzenie przyjęcia przez magazyn, data i osoba kontaktowa" required></textarea>
-      <label class="check-row"><input type="checkbox" id="ups-confirmation">
-        <span>Potwierdzam, że otrzymałem(-am) niezależne potwierdzenie fizycznego doręczenia.</span></label>
-      <p id="ups-case-error" class="form-error" role="alert" hidden></p>
-      <div class="dialog-actions"><button type="button" class="secondary" data-close-dialog="ups-case-dialog">Anuluj</button>
-        <button type="submit">Przygotuj treść zgłoszenia</button></div>
-      <div id="ups-case-result" hidden>
-        <label class="field-label" for="ups-case-draft">Treść do przekazania UPS — sprawdź przed wysłaniem</label>
-        <textarea id="ups-case-draft" rows="9" readonly></textarea>
-        <div class="dialog-actions"><button type="button" id="ups-copy" class="secondary">Kopiuj treść</button>
-          <a id="ups-official-form" class="button-link" href="https://www.ups.com/upsemail/input?loc=pl_PL"
-            target="_blank" rel="noopener noreferrer">Otwórz formularz UPS</a></div>
-        <p class="field-help">Aplikacja nie wysyła wiadomości automatycznie i nie zmienia statusu UPS.</p>
-      </div>
     </form>
   </dialog>
   <footer class="page-footer">Amazon FBA Shipment ID | UPS Tracking API by CONCEPT ® 2026</footer>

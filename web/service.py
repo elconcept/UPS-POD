@@ -5,6 +5,7 @@ import base64
 import binascii
 import datetime as dt
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -62,6 +63,14 @@ def init_db() -> None:
               sha256 TEXT
             )"""
         )
+        db.execute("""CREATE TABLE IF NOT EXISTS support_cases (
+            tracking TEXT PRIMARY KEY REFERENCES shipments(tracking),
+            status TEXT NOT NULL,
+            sent_at TEXT NOT NULL DEFAULT '',
+            message_id TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0
+        )""")
         db.execute("""CREATE TABLE IF NOT EXISTS audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
             actor TEXT NOT NULL, operation TEXT NOT NULL, tracking TEXT NOT NULL DEFAULT '',
@@ -83,6 +92,10 @@ def init_db() -> None:
             "received_by": "TEXT NOT NULL DEFAULT ''",
             "photo_filename": "TEXT NOT NULL DEFAULT ''",
             "metadata_at": "TEXT NOT NULL DEFAULT ''",
+            "ups_status_detail": "TEXT NOT NULL DEFAULT ''",
+            "ups_event_code": "TEXT NOT NULL DEFAULT ''",
+            "ups_tracking_code": "TEXT NOT NULL DEFAULT ''",
+            "tracking_extras": "TEXT NOT NULL DEFAULT '{}'",
         }.items():
             if name not in existing:
                 db.execute(f"ALTER TABLE shipments ADD COLUMN {name} {definition}")
@@ -289,6 +302,29 @@ def available_months() -> list[str]:
     return sorted({*months, current_month()}, reverse=True)
 
 
+# Expose a deliberately bounded set of actual UPS API fields. Never export
+# packageAddress, receiver identity, signature/photograph, raw POD or account data.
+# A public-facing API schema can contain sensitive blobs; keys alone are not
+# an authorization to expose their values to every dashboard operator.
+UPS_EXTRA_COLUMNS = {
+    "ups.service": ("Usługa UPS", "shipment.service.description"),
+    "ups.pickup_date": ("Data odbioru wg UPS", "shipment.pickupDate"),
+    "ups.package_count": ("Liczba paczek", "shipment.packageCount"),
+    "ups.status_detail": ("Opis statusu UPS", "package.currentStatus.simplifiedTextDescription"),
+    "ups.status_code": ("Kod statusu UPS", "package.currentStatus.code"),
+    "ups.status_type": ("Typ zdarzenia UPS", "package.activity[0].status.type"),
+    "ups.event_code": ("Kod zdarzenia", "package.activity[0].status.code"),
+    "ups.event_status_code": ("Kod skanu", "package.activity[0].status.statusCode"),
+    "ups.activity_description": ("Ostatnia aktywność", "package.activity[0].status.description"),
+    "ups.activity_date": ("Data aktywności", "package.activity[0].date"),
+    "ups.activity_time": ("Czas aktywności", "package.activity[0].time"),
+    "ups.delivery_date_type": ("Typ daty dostawy", "package.deliveryDate[0].type"),
+    "ups.delivery_time_type": ("Typ czasu dostawy", "package.deliveryTime.type"),
+    "ups.delivery_start": ("Okno dostawy od", "package.deliveryTime.startTime"),
+    "ups.delivery_end": ("Okno dostawy do", "package.deliveryTime.endTime"),
+    "ups.weight_unit": ("Jednostka wagi", "package.weight.unitOfMeasurement"),
+}
+
 # Client-visible fields are explicitly mapped to fixed SQL expressions.
 # Never interpolate user-supplied names or directions into SQL.
 LIST_COLUMNS = {
@@ -315,6 +351,9 @@ LIST_COLUMNS = {
         "LOWER(ups_status) LIKE '%w drodze%') THEN 'Błąd' "
          "ELSE 'Oczekuje' END",
 }
+# All JSON paths below originate in the fixed server-side whitelist.
+for _key in UPS_EXTRA_COLUMNS:
+    LIST_COLUMNS[_key] = f"""COALESCE(json_extract(tracking_extras, '$."{_key}"'), '')"""
 SORT_COLUMNS = dict(LIST_COLUMNS, weight="CAST(NULLIF(weight_value,'') AS REAL)")
 
 
@@ -364,11 +403,25 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 200,
             "last_attempt_at,next_attempt_at,delivered_at,pod_path,shipment_id,ship_date,"
             "ship_date_source,ups_status,ups_status_code,weight_value,weight_unit,"
             "delivery_time_type,delivery_time_start,delivery_time_end,delivery_date,"
-            "delivery_date_type,received_by,photo_filename FROM shipments WHERE " + condition +
+             "delivery_date_type,received_by,photo_filename,ups_status_detail,"
+            "ups_event_code,ups_tracking_code,tracking_extras,"
+            "(SELECT sc.status FROM support_cases AS sc "
+            "WHERE sc.tracking=shipments.tracking) AS support_status "
+            "FROM shipments WHERE " + condition +
             " ORDER BY " + order + " LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
-    return {"total": total, "rows": [dict(r) for r in rows],
+    result_rows = []
+    for record in rows:
+        row = dict(record)
+        try:
+            raw = json.loads(row.pop("tracking_extras") or "{}")
+            row["ups_extra"] = {key: str(raw.get(key, ""))[:180]
+                                for key in UPS_EXTRA_COLUMNS if raw.get(key)}
+        except (TypeError, ValueError, AttributeError):
+            row["ups_extra"] = {}
+        result_rows.append(row)
+    return {"total": total, "rows": result_rows,
             "months": available_months()}
 
 
@@ -583,15 +636,20 @@ def save_tracking_detail(tracking: str, detail: dict) -> None:
     """Prefer UPS pickupDate whenever supplied; preserve date only if API has none."""
     status = str(detail.get("status") or "")[:150]
     code = str(detail.get("status_typ") or "")[:20]
+    detail_text = safe_description(detail.get("status_detail") or "")[:450]
+    event_code = str(detail.get("event_code") or "")[:30]
+    tracking_code = str(detail.get("status_code") or "")[:30]
     date = str(detail.get("ship_date") or "")
     source = str(detail.get("ship_date_source") or "")
     with connection() as db:
         db.execute(
             """UPDATE shipments SET ups_status=?,ups_status_code=?,
+               ups_status_detail=?,ups_event_code=?,ups_tracking_code=?,
                ship_date=CASE WHEN ?='' THEN ship_date ELSE ? END,
                ship_date_source=CASE WHEN ?='' THEN ship_date_source ELSE ? END,
                updated_at=? WHERE tracking=?""",
-            (status, code, date, date, date, source, utcnow(), tracking),
+            (status, code, detail_text, event_code, tracking_code,
+             date, date, date, source, utcnow(), tracking),
         )
     sync_named_pdf(tracking)
 
@@ -621,6 +679,42 @@ def save_tracking_metadata(tracking: str, payload: dict) -> None:
     p = _first_package(payload, tracking)
     if not p:
         return
+    shipments = (payload.get("trackResponse") or {}).get("shipment") or []
+    shipment = next((sh for sh in shipments if isinstance(sh, dict)
+                     and any(pkg.get("trackingNumber", "").upper() == tracking.upper()
+                             for pkg in sh.get("package") or []
+                             if isinstance(pkg, dict))), shipments[0] if shipments else {})
+    status = p.get("currentStatus") or {}
+    event = next((evt for evt in (p.get("activity") or [])
+                  if isinstance(evt, dict)), {})
+    event_status = event.get("status") or {}
+    first_date = next((date for date in (p.get("deliveryDate") or [])
+                       if isinstance(date, dict)), {})
+    delivery_window = p.get("deliveryTime") or {}
+    def safe_field(value):
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            return ""
+        return safe_description(str(value))[:180]
+    raw_extra = {
+        "ups.service": (shipment.get("service") or {}).get("description"),
+        "ups.pickup_date": shipment.get("pickupDate"),
+        "ups.package_count": shipment.get("packageCount"),
+        "ups.status_detail": status.get("simplifiedTextDescription"),
+        "ups.status_code": status.get("code"),
+        "ups.status_type": event_status.get("type"),
+        "ups.event_code": event_status.get("code"),
+        "ups.event_status_code": event_status.get("statusCode"),
+        "ups.activity_description": event_status.get("description"),
+        "ups.activity_date": event.get("date"),
+        "ups.activity_time": event.get("time"),
+        "ups.delivery_date_type": first_date.get("type"),
+        "ups.delivery_time_type": delivery_window.get("type"),
+        "ups.delivery_start": delivery_window.get("startTime"),
+        "ups.delivery_end": delivery_window.get("endTime"),
+        "ups.weight_unit": (p.get("weight") or {}).get("unitOfMeasurement"),
+    }
+    extras = {key: text for key, value in raw_extra.items()
+              if key in UPS_EXTRA_COLUMNS and (text := safe_field(value))}
     weight = p.get("weight") or {}
     time_data = p.get("deliveryTime") or {}
     dates = p.get("deliveryDate") or []
@@ -669,12 +763,12 @@ def save_tracking_metadata(tracking: str, payload: dict) -> None:
             "UPDATE shipments SET weight_value=?,weight_unit=?,delivery_time_type=?,"
             "delivery_time_start=?,delivery_time_end=?,delivery_date=?,"
             "delivery_date_type=?,received_by=?,photo_filename=?,metadata_at=?,"
-            "updated_at=? WHERE tracking=?",
+             "tracking_extras=?,updated_at=? WHERE tracking=?",
             (value(weight, "weight", 30),value(weight,"unitOfMeasurement",12),
              value(time_data,"type",12),value(time_data,"startTime",12),
              value(time_data,"endTime",12),date_yyyymmdd,value(selected_date,"type",12),
              value(delivered,"receivedBy",120),photo_filename or existing_photo,
-             utcnow(),utcnow(),tracking),
+             utcnow(),json.dumps(extras, ensure_ascii=False),utcnow(),tracking),
         )
 
 
