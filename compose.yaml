@@ -2,17 +2,18 @@ name: ups-pod
 services:
   init:
     image: busybox:1.37
-    command: ["sh","-c","mkdir -p /data/POD /data/dane /data/dane/logi && chown -R 10001:10001 /data && chmod -R u+rwX,g+rwX /data"]
-    volumes:
-      - /volume2/docker/ups-pod/data:/data
+    command: ["sh","-c","mkdir -p /data/pod /data/source && chown -R 10001:10001 /data && chmod 600 /deploy/.env"]
     restart: "no"
     network_mode: none
+    volumes:
+      - /volume2/docker/ups-pod/data:/data
+      - /volume2/docker/ups-pod/.env:/deploy/.env
     cap_drop: [ALL]
     cap_add: [CHOWN, FOWNER]
     security_opt: ["no-new-privileges:true"]
   web:
     build:
-      context: .
+      context: /volume2/docker/ups-pod
       dockerfile: Dockerfile
     image: ups-pod-web:local
     container_name: ups-pod-web
@@ -22,12 +23,12 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 256
-    shm_size: 256m
-    env_file: .env
+    env_file: /volume2/docker/ups-pod/.env
     environment:
       PUBLIC_HOST: ups.xlap.pl
       UPS_POD_HOME: /data
       TZ: Europe/Warsaw
+      HOME: /tmp
     volumes:
       - /volume2/docker/ups-pod/data:/data
     tmpfs:
@@ -41,24 +42,29 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
-  scheduler:
+      start_period: 45s
+  worker:
     image: ups-pod-web:local
-    container_name: ups-pod-scheduler
-    command: ["python","/app/scheduler.py"]
+    container_name: ups-pod-worker
+    command: ["python","/app/worker.py"]
     restart: unless-stopped
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    env_file: .env
+    shm_size: 256m
+    pids_limit: 256
+    env_file: /volume2/docker/ups-pod/.env
     environment:
       UPS_POD_HOME: /data
+      UPS_POD_RETRY_HOURS: "3"
+      UPS_POD_POLL_SECONDS: "10"
       TZ: Europe/Warsaw
+      HOME: /tmp
     volumes:
       - /volume2/docker/ups-pod/data:/data
     tmpfs:
-      - /tmp:size=128m,mode=1777
+      - /tmp:size=256m,mode=1777
     networks: [ups_outbound]
     depends_on:
       init:
@@ -68,6 +74,3 @@ networks:
     external: true
   ups_outbound:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.16.12.32/28
