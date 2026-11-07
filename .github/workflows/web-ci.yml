@@ -1,38 +1,57 @@
-name: UPS POD web lint and end-to-end
+name: UPS POD live E2E and deploy
 on:
   push:
-    branches: [main]
-    paths:
-      - "web/**"
-      - "tests_web/**"
-      - "Dockerfile"
-      - "compose.yaml"
-      - "requirements-web.txt"
-      - "requirements-dev.txt"
-      - "ruff.toml"
-      - ".github/workflows/web-ci.yml"
+    branches: [main, 'codex/**']
   workflow_dispatch:
-
 permissions:
   contents: read
-
+concurrency:
+  group: ups-pod-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   quality:
-    name: Ruff and end-to-end on UPS simulator
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
-      - name: Ruff
-        run: ruff check web tests_web
-      - name: Prepare browser for real HTML to PDF test
-        run: python -m playwright install --with-deps chromium
-      - name: Unit + end-to-end HTTP/SQLite/mock UPS/PDF/ZIP
-        run: python -m pytest -q tests_web -v
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-dev.txt
+      - run: ruff check web tests_web
+      - run: python -m playwright install --with-deps chromium
+      - name: Real UPS API browser, worker, SQLite, PDF and ZIP E2E
+        env:
+          UPS_ENV: ${{ secrets.UPS_ENV }}
+          UPS_E2E_TRACKING: ${{ secrets.UPS_E2E_TRACKING }}
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          env = os.environ.copy()
+          for line in env.pop("UPS_ENV", "").splitlines():
+              if "=" in line and not line.startswith("#"):
+                  k, v = line.split("=", 1)
+                  env[k.strip()] = v.strip().strip("\"'")
+          env["UPS_POD_ADRES_API"] = "https://onlinetools.ups.com"
+          raise SystemExit(subprocess.call(["python", "-m", "pytest", "-q", "tests_web", "--tb=short"], env=env))
+          PY
+  deploy:
+    needs: quality
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Request Synology redeploy after successful live E2E
+        env:
+          CF_ID: ${{ secrets.DEPLOY_CF_CLIENT_ID }}
+          CF_SECRET: ${{ secrets.DEPLOY_CF_CLIENT_SECRET }}
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            "https://deploy.xlap.pl/deploy/${GITHUB_REPOSITORY}" \
+            -H "CF-Access-Client-Id: $CF_ID" \
+            -H "CF-Access-Client-Secret: $CF_SECRET" \
+            -H "X-Deploy-Token: $DEPLOY_TOKEN" \
+            -H "Content-Type: application/json" -d "{\"sha\":\"${GITHUB_SHA}\"}"

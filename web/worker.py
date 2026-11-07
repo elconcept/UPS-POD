@@ -22,6 +22,45 @@ def credentials() -> tuple[str, str]:
     return cid.strip(), secret.strip()
 
 
+def attach_audit(client: core.KlientUPS) -> None:
+    """Record every HTTP attempt, including OAuth and internal retries, without bodies."""
+    if getattr(client, "_audit_attached", False):
+        return
+    client._audit_attached = True
+
+    def response_audit(response, *args, **kwargs):
+        is_tracking = "/api/track/" in response.url
+        number = response.url.split("/details/")[-1].split("?")[0] if is_tracking else ""
+        description = "Odpowiedź UPS OAuth" if not is_tracking else "Odpowiedź UPS Tracking"
+        try:
+            body = response.json()
+            errors = (body.get("response") or {}).get("errors") or []
+            codes = [str(e.get("code", "")) for e in errors if isinstance(e, dict)]
+            # Only bounded machine codes are accepted from arbitrary error bodies.
+            codes = [c for c in codes if c.isalnum() and len(c) <= 30]
+            if codes:
+                description += "; kody UPS: " + ", ".join(codes[:10])
+        except (ValueError, AttributeError, TypeError):
+            description += "; odpowiedź nie jest poprawnym JSON"
+        service.audit("worker", "ups_http", number, response.status_code, description)
+
+    client.sesja.hooks["response"].append(response_audit)
+    original_send = client.sesja.send
+
+    def audited_send(request, **kwargs):
+        tracking = request.url.split("/details/")[-1].split("?")[0] if "/details/" in request.url else ""
+        service.audit("worker", "ups_request", tracking,
+                      description="UPS Tracking" if tracking else "UPS OAuth")
+        try:
+            return original_send(request, **kwargs)
+        except client.requests.RequestException as exc:
+            service.audit("worker", "ups_network_error", tracking,
+                          description=type(exc).__name__)
+            raise
+
+    client.sesja.send = audited_send
+
+
 def save_original(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".part")
@@ -47,8 +86,12 @@ def process_one(number: str, client: core.KlientUPS) -> str:
                            "pdf", hashlib.sha256(target.read_bytes()).hexdigest())
         return "ready"
     try:
+        attach_audit(client)
+        service.audit("worker", "tracking_start", number)
         code, json_body, text = client.sledz(number)
         detail = core.analizuj(code, json_body, text)
+        service.audit("worker", "tracking_result", number, code,
+                      detail.get("opis", "") or detail.get("blad", ""))
         if not detail["ok"]:
             service.mark_retry(number, detail["blad"] or f"UPS HTTP {code}",
                                delay_hours=RETRY_HOURS)
@@ -84,8 +127,8 @@ def process_one(number: str, client: core.KlientUPS) -> str:
                            str(original), typ, digest)
         return "ready"
     except Exception as exc:
-        logger.exception("UPS POD failure for %s", number)
-        service.mark_retry(number, f"{type(exc).__name__}: {exc}",
+        logger.error("UPS POD failure for %s: %s", number, type(exc).__name__)
+        service.mark_retry(number, f"Błąd przetwarzania: {type(exc).__name__}",
                            delay_hours=RETRY_HOURS)
         return "retry"
 
@@ -104,14 +147,17 @@ def run_once(client: core.KlientUPS | None = None) -> str | None:
             os.getenv("UPS_POD_ADRES_API", "https://onlinetools.ups.com"),
             cid, secret, numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
         )
-    return process_one(number, client)
+    result = process_one(number, client)
+    service.audit("worker", result, number)
+    return result
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     service.init_db()
     # Only the dedicated worker recovers interrupted items, not the web process.
-    service.recover_in_progress()
+    recovered = service.recover_in_progress()
+    service.audit("worker", "startup", description=f"Odzyskano zadań {recovered}.")
     logger.info("UPS POD worker started. Sequential processing, retry every %s hours.", RETRY_HOURS)
     client = None
     while True:
@@ -127,6 +173,7 @@ def main() -> None:
                 if result is not None:
                     continue
             else:
+                service.audit("worker", "credentials_missing", description="Brak konfiguracji UPS.")
                 client = None
         except Exception:
             logger.exception("Unexpected UPS queue worker error")

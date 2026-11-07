@@ -219,3 +219,36 @@ $("retry-selected").addEventListener("click", async () => {
 });
 void refresh();
 setInterval(() => void refresh(), 7000);
+
+let logsBusy = false;
+let logBefore = 0;
+async function refreshLogs(older = false) {
+  if (logsBusy || $("logs-panel").hidden) return;
+  logsBusy = true;
+  try {
+    const data = await requestJson("/api/logs" + (older && logBefore ? "?before=" + logBefore : ""));
+    if (!older) $("log-rows").replaceChildren();
+    for (const row of data.items) {
+      const tr = document.createElement("tr");
+      for (const value of [row.created_at, row.actor, row.operation, row.tracking, row.http_status ?? "", row.description]) {
+        const td = document.createElement("td");
+        td.textContent = value;
+        tr.append(td);
+      }
+      $("log-rows").append(tr);
+    }
+    if (data.items.length) logBefore = data.items[data.items.length - 1].id;
+    $("logs-status").textContent = "Aktualizacja " + new Date().toLocaleTimeString();
+    $("logs-older").disabled = data.items.length < 200;
+  } catch (error) { $("logs-status").textContent = error.message; }
+  finally { logsBusy = false; }
+}
+$("tab-logs").addEventListener("click", () => {
+  $("shipments-panel").hidden = true; $("logs-panel").hidden = false;
+  void refreshLogs();
+});
+$("tab-shipments").addEventListener("click", () => {
+  $("shipments-panel").hidden = false; $("logs-panel").hidden = true;
+});
+$("logs-older").addEventListener("click", () => void refreshLogs(true));
+setInterval(() => void refreshLogs(), 7000);
