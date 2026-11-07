@@ -318,17 +318,23 @@ def analizuj(kod, js, tekst):
                 w['pod_typ'] = rozpoznaj_typ(w['pod'])
             except Exception:
                 w['pod'] = None
+        # Explicit shipment-level pickup date from the real UPS Tracking response.
+        pickup_date = data_ups(sh.get('pickupDate'))
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', pickup_date):
+            w['ship_date'] = pickup_date
+            w['ship_date_source'] = 'ups_pickup_date'
         # Physical first acceptance by UPS, not the label/manifest creation date.
-        for activity in reversed(akt):
-            if not isinstance(activity, dict):
-                continue
-            ac_status = activity.get('status') or {}
-            if str(ac_status.get('code') or '').upper() in {'PU', 'OR', 'PC', 'PT'}:
-                date = data_ups(activity.get('date'))
-                if re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
-                    w['ship_date'] = date
-                    w['ship_date_source'] = 'ups_pickup_scan'
-                    break
+        if not w['ship_date']:
+            for activity in reversed(akt):
+                if not isinstance(activity, dict):
+                    continue
+                ac_status = activity.get('status') or {}
+                if str(ac_status.get('code') or '').upper() in {'PU', 'OR', 'PC', 'PT'}:
+                    date = data_ups(activity.get('date'))
+                    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+                        w['ship_date'] = date
+                        w['ship_date_source'] = 'ups_pickup_scan'
+                        break
         # Some original UPS POD HTML contains "Shipped or Billed on".
         # This is a billed/shipped date, NOT guaranteed physical handover.
         if not w['ship_date'] and w['pod_typ'] == 'html' and w['pod']:
