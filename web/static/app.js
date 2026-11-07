@@ -108,20 +108,42 @@ function saveColumnPrefs() {
   saveCookie("ups_pod_sort", sortBy);
   saveCookie("ups_pod_sort_direction", sortDirection);
 }
+// Base widths are user-editable preferences, not a fixed total table width.
+// Fill the entire available grid width; overflow horizontally only when the
+// sum of column minimums is larger than the viewport (typically on mobile).
+// The queue/PDF columns expand much less than tracking and FBA fields.
+const COLUMN_GROW = {
+  fba: 2.0, tracking: 2.0, ship_date: 0.9, delivery_date: 1.0,
+  weight: 0.7, ups_status: 0.9, queue: 0.12, document: 0.5
+};
 function applyColumnWidths() {
   const table = $("shipments-table");
-  const visibleWidth = columnOrder.filter((key) => visibleColumns.has(key))
-    .reduce((sum, key) => sum + columnWidths[key], 0);
-  table.style.width = Math.max(visibleWidth, 300) + "px";
-  table.style.minWidth = Math.max(visibleWidth, 300) + "px";
+  const wrapper = table.closest(".table-wrap");
+  const keys = columnOrder.filter((key) => visibleColumns.has(key));
+  const baseTotal = keys.reduce((sum, key) => sum + columnWidths[key], 0);
+  const containerWidth = wrapper?.clientWidth || 0;
+  const targetWidth = Math.max(baseTotal, containerWidth);
+  const extra = Math.max(0, targetWidth - baseTotal);
+  const growTotal = keys.reduce((sum, key) => sum + (COLUMN_GROW[key] || 1), 0);
+  const actualWidths = {};
+  let allocated = 0;
+  keys.forEach((key, index) => {
+    const additional = index === keys.length - 1
+      ? extra - allocated
+      : Math.floor(extra * (COLUMN_GROW[key] || 1) / growTotal);
+    actualWidths[key] = columnWidths[key] + additional;
+    allocated += additional;
+  });
+  table.style.width = targetWidth + "px";
+  table.style.minWidth = targetWidth + "px";
   for (const cell of table.querySelectorAll("[data-col]")) {
     const key = cell.dataset.col;
     if (!COLUMN_KEYS.includes(key)) continue;
-    const width = columnWidths[key];
+    const shown = visibleColumns.has(key);
+    const width = shown ? actualWidths[key] : columnWidths[key];
     cell.style.width = width + "px";
     cell.style.minWidth = width + "px";
     cell.style.maxWidth = width + "px";
-    const shown = visibleColumns.has(key);
     cell.hidden = !shown;
     cell.classList.toggle("column-hidden", !shown);
   }
@@ -130,6 +152,14 @@ function applyColumnWidths() {
     if (key) resize.setAttribute("aria-valuenow", String(columnWidths[key]));
   }
 }
+// Observe the actual grid container, not just window.resize: opening a sidebar,
+// changing responsive breakpoints or resizing the app should keep columns fitted.
+const tableWrapper = $("shipments-table").closest(".table-wrap");
+const trackingWidthObserver = new ResizeObserver(() => {
+  if (!tableWrapper || !tableWrapper.clientWidth) return;
+  applyColumnWidths();
+});
+trackingWidthObserver.observe(tableWrapper);
 function applyColumnOrder() {
   const table = $("shipments-table");
   const head = table.tHead.rows[0];

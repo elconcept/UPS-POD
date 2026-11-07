@@ -77,7 +77,7 @@ td.track a:hover,td.track a:focus{color:#1465b0}
 
 /* UPS POD operations console: density, hierarchy, accessible table controls. */
 :root{--ink:#19344d;--quiet:#60748a;--line:#d9e4ed;--navy:#1a567d;--surface:#fff}
-.container{max-width:1800px;padding:15px 22px 25px}
+.container{width:100%;max-width:none;padding:15px 22px 25px}
 .topbar{align-items:center;margin-bottom:10px;gap:12px;padding-bottom:11px;border-bottom:1px solid var(--line)}
 .topbar .eyebrow,.topbar p{display:none}
 .topbar h1{margin:0;font-size:20px;letter-spacing:-.025em}
@@ -109,8 +109,8 @@ td.track a:hover,td.track a:focus{color:#1465b0}
 .intake textarea{min-height:85px}
 .intake.is-collapsed{padding:9px 15px}
 .intake.is-collapsed .section-head h2{font-size:13px}
-#shipments-panel .table-wrap{max-height:min(72vh,900px);overflow:auto;border:1px solid #e4ebf2;border-radius:7px}
-#shipments-panel table{border-collapse:separate;border-spacing:0;min-width:1070px}
+#shipments-panel .table-wrap{height:auto;max-height:none;overflow-x:auto;overflow-y:visible;border:1px solid #e4ebf2;border-radius:7px}
+#shipments-panel table{border-collapse:separate;border-spacing:0;min-width:0}
 #shipments-panel thead th{background:#f3f7fb;position:sticky;top:0;z-index:2;
   padding:6px 7px;white-space:nowrap;border-bottom:1px solid #dae6ef}
 #shipments-panel thead .column-filters th{top:39px;z-index:2;background:#fafcfe;padding:4px 6px 7px}
@@ -185,7 +185,7 @@ td.track a:hover,td.track a:focus{color:#1465b0}
   .top-status{white-space:normal;text-align:right}
   .section-head{flex-direction:row;flex-wrap:wrap;gap:8px}
   .panel{padding:12px}
-  #shipments-panel .table-wrap{max-height:70vh}
+  #shipments-panel .table-wrap{max-height:none}
 }
 @media(max-width:480px){
   .stats{gap:5px}

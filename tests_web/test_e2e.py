@@ -947,7 +947,9 @@ def test_theme_and_configurable_columns_browser(application):
             width_after = page.locator('.column-header[data-col="ups_status"]').evaluate(
                 "(node) => parseFloat(node.style.width)"
             )
-            assert width_after == width_before + 10
+            # Wider user preference reallocates some spare pixels from other
+            # columns; the entire table must keep filling the available width.
+            assert width_before < width_after <= width_before + 10
             page.reload()
             expect(page.locator('.column-header[data-col="ups.service"]')).to_be_visible()
             persisted = page.locator('.column-header[data-col="ups_status"]').evaluate(
@@ -1141,6 +1143,92 @@ def test_config_tab_plain_dates_and_mixed_zip_browser(application):
             assert page.locator("#tab-config").get_attribute("aria-selected") == "true"
             page.locator("#tab-shipments").click()
             expect(page.locator("#rows tr")).to_have_count(2)
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_tracking_table_fills_viewport_and_uses_page_vertical_scroll(application):
+    """Regressions: no 72vh iframe-like scrollbox and no 1002px fixed-width grid."""
+    import service
+
+    numbers = " ".join("1Z" + f"{index:016d}" for index in range(1, 45))
+    service.add_numbers(numbers)
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            for width, height in [(1440, 900), (1920, 1080), (2560, 1440), (390, 844)]:
+                context = browser.new_context(viewport={"width": width, "height": height})
+                context.add_cookies([{
+                    "name": "ups_pod_month", "value": "all",
+                    "url": f"http://127.0.0.1:{server.server_port}",
+                }])
+                page = context.new_page()
+                page.goto(f"http://127.0.0.1:{server.server_port}")
+                expect(page.locator("#rows tr")).to_have_count(44)
+                def metrics(active_page=page):
+                    return active_page.evaluate("""() => {
+                      const wrap = document.querySelector('#shipments-panel .table-wrap');
+                      const table = document.getElementById('shipments-table');
+                      const panel = document.getElementById('shipments-panel');
+                      return {
+                        panelWidth: panel.getBoundingClientRect().width,
+                        wrapperWidth: wrap.clientWidth,
+                        tableWidth: table.getBoundingClientRect().width,
+                        wrapperHeight: wrap.clientHeight,
+                        contentHeight: wrap.scrollHeight,
+                        pageHeight: document.documentElement.scrollHeight,
+                        docWidth: document.documentElement.scrollWidth,
+                      };
+                    }""")
+                m = metrics()
+                assert m["docWidth"] <= width + 1
+                assert m["panelWidth"] > width * .90
+                assert m["pageHeight"] > height
+                # The entire list participates in the page's vertical scroll.
+                assert abs(m["contentHeight"] - m["wrapperHeight"]) <= 1
+                if width >= 1200:
+                    assert abs(m["tableWidth"] - m["wrapperWidth"]) <= 2
+                else:
+                    assert m["tableWidth"] > m["wrapperWidth"] + 200
+
+                if width == 1440:
+                    page.set_viewport_size({"width": 1920, "height": 1080})
+                    page.wait_for_function("""() => {
+                      const w=document.querySelector('#shipments-panel .table-wrap');
+                      const t=document.getElementById('shipments-table');
+                      return Math.abs(t.getBoundingClientRect().width-w.clientWidth)<=2;
+                    }""")
+                    expect(page.locator("#rows tr")).to_have_count(44)
+                    page.locator("#columns-open").click()
+                    # Adding an eighth visible column still occupies full grid.
+                    page.locator(".column-choice").filter(has_text="Waga").locator("input").check()
+                    page.locator("#columns-done").click()
+                    assert abs(metrics()["tableWidth"] - metrics()["wrapperWidth"]) <= 2
+                    # Switching tabs should not leave the hidden grid at its
+                    # smallest base width when returning to the page.
+                    page.locator("#tab-config").click()
+                    page.locator("#tab-shipments").click()
+                    page.wait_for_function("""() => {
+                      const w=document.querySelector('#shipments-panel .table-wrap');
+                      const t=document.getElementById('shipments-table');
+                      return Math.abs(t.getBoundingClientRect().width-w.clientWidth)<=2;
+                    }""")
+                    # If many API fields are added, only horizontal overflow is
+                    # used; the list's height is not re-clamped.
+                    page.locator("#columns-open").click()
+                    for item in page.locator("#columns-picker .column-choice input").all():
+                        if not item.is_checked():
+                            item.check()
+                    page.locator("#columns-done").click()
+                    full = metrics()
+                    assert full["tableWidth"] > full["wrapperWidth"]
+                    assert abs(full["contentHeight"] - full["wrapperHeight"]) <= 1
+                context.close()
             browser.close()
     finally:
         server.shutdown()

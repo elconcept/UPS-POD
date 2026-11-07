@@ -59,7 +59,7 @@ tbody tr:hover,#shipments-panel tbody tr:hover{background:var(--ui-row)}
   border-right-color:var(--ui-accent);background:#5ca4c72d}
 .column-header{position:relative;padding-right:12px!important}
 .column-hidden,[hidden]{display:none!important}
-#shipments-table{table-layout:fixed;width:max-content}
+#shipments-table{table-layout:fixed;width:100%;min-width:0}
 #shipments-table td{overflow:hidden;text-overflow:ellipsis}
 #shipments-panel thead .column-header{overflow:visible}
 #shipments-table .fba-cell{min-width:0}
@@ -221,3 +221,16 @@ not(.theme-toggle):not(.document-bubble):not(.support-send){background:#186596;c
 /* Keep the remaining viewport in the chosen theme on short settings pages. */
 html{min-height:100%;background:var(--ui-bg)}
 body{min-height:100vh;background:var(--ui-bg)}
+
+/* Wide, full-height tracking grid. The document scrolls vertically;
+   only an overwide table scrolls horizontally on small screens. */
+#shipments-panel{width:100%;max-width:none}
+#shipments-panel .table-wrap{
+  height:auto;max-height:none;min-height:0;
+  overflow-x:auto;overflow-y:visible;
+}
+#shipments-panel .column-filters .column-filter,
+#shipments-panel .column-filters th[data-col="tracking"] .column-filter,
+#shipments-panel .column-filters th[data-col="fba"] .column-filter {
+  width:100%;min-width:0;max-width:none;
+}
