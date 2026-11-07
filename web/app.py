@@ -122,7 +122,30 @@ def create_app(testing: bool = False) -> Flask:
             before = max(0, int(request.args.get("before", 0)))
         except ValueError:
             abort(400, "Nieprawidłowy kursor.")
-        return jsonify(items=service.audit_rows(after, before))
+        levels = [x.strip().upper() for x in request.args.get("levels", "").split(",") if x.strip()]
+        try:
+            return jsonify(items=service.audit_rows(after, before, levels))
+        except ValueError as exc:
+            abort(400, str(exc))
+
+    @web.get("/api/tracking-fields")
+    def tracking_fields():
+        return jsonify(paths=service.tracking_field_paths())
+
+    @web.post("/api/fba")
+    def assign_fba():
+        data = request.get_json(silent=True) or {}
+        try:
+            if isinstance(data.get("text"), str):
+                entries = service.parse_fba_text(data["text"])
+            else:
+                entries = data.get("entries")
+            if not isinstance(entries, list):
+                abort(400, "Wymagana tabela FBA lub lista przypisań.")
+            result = service.assign_fba_rows(entries, replace=data.get("replace") is True)
+        except ValueError as exc:
+            abort(400, str(exc))
+        return jsonify(result)
 
     @web.post("/api/retry")
     def retry():
@@ -144,9 +167,13 @@ def create_app(testing: bool = False) -> Flask:
         matching = service.ready_paths([tracking])
         if not matching:
             abort(404, "Brak dokumentu PDF dla tego numeru.")
+        try:
+            filename = service.export_filename(tracking)
+        except ValueError as exc:
+            abort(409, str(exc))
         service.audit("user", "download_pdf", tracking)
         return send_file(matching[0][1], mimetype="application/pdf",
-                         as_attachment=True, download_name=f"{tracking}_POD.pdf")
+                         as_attachment=True, download_name=filename)
 
     @web.post("/api/zip")
     def zip_download():
@@ -165,11 +192,15 @@ def create_app(testing: bool = False) -> Flask:
             abort(404, "Nie znaleziono gotowych potwierdzeń.")
         if sum(p.stat().st_size for _, p in paths) > 150 * 1024 * 1024:
             abort(413, "Paczka przekracza 150 MB; pobierz mniejszy zestaw.")
+        try:
+            names = [(tracking, path, service.export_filename(tracking)) for tracking, path in paths]
+        except ValueError as exc:
+            abort(409, str(exc))
         stream = io.BytesIO()
         with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_STORED,
                              allowZip64=True) as archive:
-            for tracking, path in paths:
-                archive.write(path, arcname=f"{tracking}_POD.pdf")
+            for _tracking, path, name in names:
+                archive.write(path, arcname=name)
         service.audit("user", "download_zip", description=f"Dokumentów {len(paths)}.")
         stream.seek(0)
         return send_file(stream, mimetype="application/zip", as_attachment=True,
