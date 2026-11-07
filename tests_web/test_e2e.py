@@ -281,6 +281,7 @@ def test_cached_pdf_skips_network_and_recovery(client, fake_ups):
     assert fake_ups["queries"] == []
     service.add_numbers(NUM_B)
     assert service.claim_next() == NUM_B
-    assert service.list_numbers()["rows"][0]["state"] == "processing"
+    current = {r["tracking"]: r for r in service.list_numbers()["rows"]}
+    assert current[NUM_B]["state"] == "processing"
     assert service.recover_in_progress() == 1
     assert worker.run_once() == "retry"
