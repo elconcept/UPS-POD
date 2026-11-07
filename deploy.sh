@@ -8,8 +8,8 @@ docker compose -p ups-pod -f compose.yaml build --build-arg "REVISION=$revision"
 # Complete image build before stopping running application processes.
 if [ ! -f .data_uid_1031_migrated ]; then
   docker stop ups-pod-worker ups-pod-web 2>/dev/null || true
-  docker run --rm --user 0:0 --entrypoint /bin/sh \\
-    -v /volume2/docker/ups-pod/data:/data \\
+  docker run --rm --user 0:0 --entrypoint /bin/sh \
+    -v /volume2/docker/ups-pod/data:/data \
     ups-pod-web:local -c 'chown -R 1031:100 /data && chmod 700 /data'
   touch .data_uid_1031_migrated
 fi
