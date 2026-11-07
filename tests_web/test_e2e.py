@@ -359,6 +359,27 @@ def test_ups_without_fba_then_same_tracking_with_fba_is_updated(application):
                           (tracking,)).fetchone()[0] == "FBA1234567"
 
 
+
+def test_repeated_import_of_same_fba_tracking_is_idempotent(application):
+    import service
+    tracking = "1Z004R316805636772"
+    # FBA suffixes can have different lengths; a repeat must not be an error.
+    for fba in ("FBA1", "FBA15MSX7FKL", "FBA123456789012345"):
+        parsed, rejected = service.parse_mixed_text(f"{fba} {tracking}")
+        assert rejected == []
+        assert parsed[0]["shipment_id"] == fba
+    payload = "FBA15MSX7FKL " + tracking
+    first = service.add_numbers(payload)
+    second = service.add_numbers(payload)
+    assert first["added"] == 1 and first["changed"] == 1
+    assert second["added"] == 0 and second["existing"] == 1
+    assert second["changed"] == 0 and second["rejected_count"] == 0
+    with service.connection() as db:
+        assert db.execute("SELECT shipment_id FROM shipments WHERE tracking=?",
+                          (tracking,)).fetchone()[0] == "FBA15MSX7FKL"
+
+
+
 def test_waiting_tracking_gets_audit_history_and_no_false_error(application):
     import service
     tracking = "1Z004R316834147988"
