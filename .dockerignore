@@ -1,0 +1,17 @@
+.git
+.github
+.env
+.env.*
+data/
+**/__pycache__/
+**/.venv/
+**/dane/
+**/POD/
+**/klucze_ups.json
+**/*_odpowiedz_ups.json
+*.xlsx
+*.zip
+build/
+dist/
+testy/
+tests_web/
