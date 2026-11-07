@@ -9,8 +9,8 @@ COPY ups_web/ups-logo.svg /app/ups-logo.svg
 COPY web/app.py web/service.py web/worker.py web/supervisor.py /app/
 COPY web/templates/ /app/templates/
 COPY web/static/ /app/static/
-RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin upspod
+RUN useradd --uid 1031 --gid 100 --no-create-home --shell /usr/sbin/nologin upspod
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/app HOME=/tmp PLAYWRIGHT_BROWSERS_PATH=/ms-playwright UPS_POD_HOME=/data
-USER 10001:10001
+USER 1031:100
 EXPOSE 8080
 CMD ["python","/app/supervisor.py"]
