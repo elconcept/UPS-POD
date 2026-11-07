@@ -115,12 +115,23 @@ def init_db() -> None:
                        "description,level) VALUES(?,?,?,?,?,?,?)",
                        (utcnow(), "system", op, record["tracking"], None, desc,
                         audit_level(op)))
-    # Moving legacy PDFs is idempotent and guarded by SQLite BEGIN IMMEDIATE.
-    # We retain old /data/pod copies as a rollback backup; active paths are only under /pod.
+    # Reconcile legacy or renamed PDFs, but do not hash and glob-scan thousands
+    # of already canonical documents on every web and worker startup.
+    # This keeps migrations idempotent and preserves legacy originals as backup.
     with connection() as db:
-        ready = [row[0] for row in db.execute("SELECT tracking FROM shipments WHERE state='ready'")]
-    for tracking in ready:
+        ready = [dict(row) for row in db.execute(
+            "SELECT tracking,shipment_id,ship_date,pod_path FROM shipments WHERE state='ready'"
+        )]
+    for record in ready:
+        tracking = record["tracking"]
         try:
+            expected = DOCUMENTS_DIR / policy_filename(
+                tracking, record["shipment_id"], record["ship_date"])
+            observed = Path(record["pod_path"]) if record["pod_path"] else None
+            if observed == expected and not expected.is_symlink() and expected.is_file():
+                with expected.open("rb") as src:
+                    if src.read(4) == b"%PDF":
+                        continue
             sync_named_pdf(tracking)
         except (OSError, ValueError) as exc:
             audit("system", "pod_migration_error", tracking, description=type(exc).__name__)

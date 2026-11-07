@@ -757,3 +757,20 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_startup_skips_repeated_hash_and_glob_for_canonical_pdf(application, monkeypatch):
+    import service
+
+    number = "1Z004R316834147988"
+    service.add_numbers(number)
+    target = service.document_target(number)
+    target.write_bytes(b"%PDF-1.4\nvalid fixture\n")
+    service.mark_ready(number, "Doręczono", "", str(target), "", "pdf", "abc")
+
+    def refuse_repeated_migration(_tracking):
+        raise AssertionError("Canonical PDF must not be rehashed on each startup")
+
+    monkeypatch.setattr(service, "sync_named_pdf", refuse_repeated_migration)
+    service.init_db()
+    assert target.exists()

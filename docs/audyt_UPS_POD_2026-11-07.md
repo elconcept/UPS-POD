@@ -65,3 +65,7 @@ Według oficjalnej dokumentacji UPS status Delivered oznacza rejestrowane doręc
 https://www.ups.com/pl/en/support/tracking-support/where-is-my-package/understanding-tracking-status
 https://www.ups.com/pl/pl/support/contact-us
 https://www.ups.com/upsemail/input?loc=pl_PL
+
+### Uzupełnienie po kontroli pierwszego rozruchu
+
+Zaobserwowano, że web oraz worker wykonują kosztowny przegląd całego archiwum przy starcie, co opóźnia odpowiadanie healthcheck. W kolejnej rewizji zastosowano szybki warunek: gotowe PDF znajdujące się pod oczekiwaną, kanoniczną nazwą i z nagłówkiem PDF pomijają pełne hashowanie oraz skanowanie wszystkich nazw. Dla dokumentów z nieprawidłową lub starszą ścieżką dotychczasowy mechanizm migracyjny pozostał aktywny. Nadal docelowo należy przenieść wszystkie ciężkie migracje do zadania serwisowego wykonywanego niezależnie od rozruchu aplikacji.
