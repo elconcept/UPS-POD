@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import os
 import re
 import shutil
@@ -425,7 +426,8 @@ def sync_named_pdf(tracking: str) -> Path | None:
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     target = EXPORTS_DIR / filename
     if target.exists() and target.stat().st_size == source.stat().st_size:
-        return target
+        if hashlib.sha256(target.read_bytes()).digest() == hashlib.sha256(source.read_bytes()).digest():
+            return target
     tmp = target.with_suffix(".pdf.tmp")
     try:
         shutil.copy2(source, tmp)
