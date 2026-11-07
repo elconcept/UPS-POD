@@ -86,15 +86,20 @@ def init_db() -> None:
     # Historical entries can predate the audit subsystem. Materialize missing
     # audit events once, so no retry row is invisible in logs.
     with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         missing = [dict(r) for r in db.execute(
             "SELECT s.tracking,s.state,s.error,s.description,s.attempts FROM shipments s "
             "WHERE s.state='retry' AND NOT EXISTS "
             "(SELECT 1 FROM audit a WHERE a.tracking=s.tracking)")]
-    for record in missing:
-        op = ("awaiting_delivery" if record["error"] == "Przesyłka jeszcze niedoręczona."
-              else "pod_retry_error")
-        audit("system", op, record["tracking"],
-              description=f"Odtworzona historia: {record['error']}; prób {record['attempts']}.")
+        for record in missing:
+            op = ("awaiting_delivery" if record["error"] == "Przesyłka jeszcze niedoręczona."
+                  else "pod_retry_error")
+            desc = safe_description(
+                f"Odtworzona historia: {record['error']}; prób {record['attempts']}.")
+            db.execute("INSERT INTO audit(created_at,actor,operation,tracking,http_status,"
+                       "description,level) VALUES(?,?,?,?,?,?,?)",
+                       (utcnow(), "system", op, record["tracking"], None, desc,
+                        audit_level(op)))
     # Moving legacy PDFs is idempotent and guarded by SQLite BEGIN IMMEDIATE.
     # We retain old /data/pod copies as a rollback backup; active paths are only under /pod.
     with connection() as db:
@@ -457,13 +462,18 @@ def assign_fba_rows(entries: list[dict], replace: bool = False) -> dict:
             if row and row["shipment_id"] and row["shipment_id"] != fba and not replace:
                 raise ValueError(f"Konflikt FBA dla {tracking}: istnieje {row['shipment_id']}.")
             if (date and row and row["ship_date"] and row["ship_date"] != date
-                    and row["shipment_id"] and not replace):
+                    and row["shipment_id"] and row["ship_date_source"] != "ups_pickup_date"
+                    and not replace):
                 raise ValueError(f"Konflikt daty dla {tracking}: istnieje {row['ship_date']}.")
             if not row:
                 db.execute("INSERT INTO shipments(tracking,created_at,updated_at,next_attempt_at) "
                            "VALUES(?,?,?,?)", (tracking, now, now, now))
-            final_date = date or (row["ship_date"] if row else "")
-            final_source = "manual" if date else (row["ship_date_source"] if row else "")
+            # An actual UPS pickupDate always wins over a historical operator date.
+            ups_known = row and row["ship_date_source"] == "ups_pickup_date"
+            final_date = (row["ship_date"] if ups_known else
+                          date or (row["ship_date"] if row else ""))
+            final_source = ("ups_pickup_date" if ups_known else
+                            "manual" if date else (row["ship_date_source"] if row else ""))
             if not row or row["shipment_id"] != fba or row["ship_date"] != final_date:
                 changed += 1
             db.execute("UPDATE shipments SET shipment_id=?,ship_date=?,ship_date_source=?,"
