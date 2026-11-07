@@ -2,14 +2,28 @@
 "use strict";
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
 const selected = new Set();
-let scope = "all";
+const COOKIE_AGE = 365 * 24 * 60 * 60;
+function getCookie(name) {
+  const value = document.cookie.split("; ").find((part) => part.startsWith(name + "="));
+  if (!value) return "";
+  try { return decodeURIComponent(value.slice(name.length + 1)); }
+  catch { return ""; }
+}
+function saveCookie(name, value) {
+  document.cookie = name + "=" + encodeURIComponent(value) + "; Path=/; Max-Age="
+    + COOKIE_AGE + "; SameSite=Strict" + (location.protocol === "https:" ? "; Secure" : "");
+}
+const savedScope = getCookie("ups_pod_scope");
+let scope = ["all", "ready", "missing"].includes(savedScope) ? savedScope : "all";
 let offset = 0;
 let total = 0;
 let rows = [];
 const monthParts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
   timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit"
 }).formatToParts(new Date()).map((part) => [part.type, part.value]));
-let activeMonth = monthParts.year + "-" + monthParts.month;
+const savedMonth = getCookie("ups_pod_month");
+let activeMonth = savedMonth === "all" || /^\d{4}-(0[1-9]|1[0-2])$/.test(savedMonth)
+  ? savedMonth : monthParts.year + "-" + monthParts.month;
 const PAGE_SIZE = 200;
 const $ = (id) => document.getElementById(id);
 
@@ -47,17 +61,37 @@ function statusInfo(row) {
   return ["W kolejce", "queued", "Oczekuje na automatyczne przetworzenie"];
 }
 
+function trackingUrl(number) {
+  return "https://www.ups.com/track?tracknum=" + encodeURIComponent(number);
+}
+
+let listReturnPoint = null;
+function openShipmentLogs(row) {
+  const table = document.querySelector("#shipments-panel .table-wrap");
+  listReturnPoint = {
+    tracking: row.tracking,
+    scrollX: window.scrollX, scrollY: window.scrollY,
+    tableX: table.scrollLeft, offset, scope, month: activeMonth,
+    query: $("query").value,
+  };
+  $("logs-return").hidden = false;
+  $("logs-tracking").value = row.tracking;
+  logBefore = 0;
+  $("tab-logs").click();
+}
+
 function renderRows() {
+  hideUpsTooltip();
   const tbody = $("rows");
   tbody.replaceChildren();
   if (!rows.length) {
     const tr = document.createElement("tr");
-    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = 9;
+    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = 8;
     tbody.append(tr);
   }
   for (const row of rows) {
     const tr = document.createElement("tr");
-    const tickCell = document.createElement("td");
+    tr.dataset.tracking = row.tracking;
     const tick = document.createElement("input");
     tick.type = "checkbox";
     tick.checked = selected.has(row.tracking);
@@ -75,38 +109,7 @@ function renderRows() {
       else selected.delete(row.tracking);
       renderRows();
     });
-    tickCell.append(tick);
-    tr.append(tickCell);
-    addCell(tr, row.tracking, "track");
-    const statusCell = document.createElement("td");
-    const tag = document.createElement("span");
-    const info = statusInfo(row);
-    tag.className = "status " + info[1];
-    tag.textContent = info[0];
-    tag.title = info[2];
-    statusCell.title = row.error || row.description || info[2];
-    statusCell.append(tag);
-    tr.append(statusCell);
-    const upsCell = document.createElement("td");
-    const upsTag = document.createElement("span");
-    const upsText = row.ups_status || "Bez statusu";
-    upsTag.textContent = upsText;
-    const lowerStatus = upsText.toLocaleLowerCase("pl-PL");
-    const upsKind = /doręczon|dostarczon|delivered/.test(lowerStatus) ? "ready"
-      : /wyjątek|problem|błąd|zwrócon|opóźnion|exception|failed/.test(lowerStatus) ? "retry"
-      : /w drodze|w tranzycie|transport|on the way|in transit/.test(lowerStatus) ? "processing"
-      : "queued";
-    upsTag.className = "status ups-status " + upsKind;
-    upsTag.title = row.ups_status_code || row.description || "";
-    upsCell.append(upsTag);
-    tr.append(upsCell);
-    const shipDate = addCell(tr, row.ship_date || "—", "ship-date");
-    shipDate.title = {
-      manual: "Data podana przez użytkownika / import FBA",
-      ups_pickup_date: "Pole pickupDate zwrócone przez UPS (data odbioru/nadania wg przewoźnika)",
-      ups_pickup_scan: "Data skanu odbioru przesyłki przez UPS",
-      pod_shipped_or_billed: "Data «Shipped or Billed on» z dokumentu UPS; nie musi oznaczać odbioru fizycznego",
-    }[row.ship_date_source] || "Data nieznana";
+    // Data columns: FBA, UPS, ship date, delivery date, weight, UPS status, queue, document.
     const fbaCell = document.createElement("td");
     fbaCell.className = "fba-cell";
     const fbaValue = document.createElement("span");
@@ -118,16 +121,82 @@ function renderRows() {
     edit.textContent = "Edytuj";
     edit.setAttribute("aria-label", "Edytuj FBA i datę " + row.tracking);
     edit.addEventListener("click", () => void editFba(row));
-    fbaCell.append(fbaValue, edit);
+    fbaCell.append(tick, fbaValue, edit);
     tr.append(fbaCell);
+
+    const trackCell = document.createElement("td");
+    trackCell.className = "track";
+    const trackingLink = document.createElement("a");
+    trackingLink.textContent = row.tracking;
+    trackingLink.href = trackingUrl(row.tracking);
+    trackingLink.target = "_blank";
+    trackingLink.rel = "noopener noreferrer";
+    trackingLink.referrerPolicy = "no-referrer";
+    trackingLink.title = "Otwórz śledzenie przesyłki w UPS";
+    trackCell.append(trackingLink);
+    tr.append(trackCell);
+
+    const shipDate = addCell(tr, row.ship_date || "—", "ship-date");
+    shipDate.title = {
+      manual: "Data podana przez użytkownika / import FBA",
+      ups_pickup_date: "Pole pickupDate zwrócone przez UPS (data odbioru/nadania wg przewoźnika)",
+      ups_pickup_scan: "Data skanu odbioru przesyłki przez UPS",
+      pod_shipped_or_billed: "Data «Shipped or Billed on» z dokumentu UPS; nie musi oznaczać odbioru fizycznego",
+    }[row.ship_date_source] || "Data nieznana";
+
+    const deliveryDay = row.delivery_date && /^\d{8}$/.test(row.delivery_date)
+      ? row.delivery_date.slice(0, 4) + "-" + row.delivery_date.slice(4, 6)
+        + "-" + row.delivery_date.slice(6) : "—";
+    const dateCell = addCell(tr, deliveryDay, "delivery-date");
+    dateCell.title = row.delivery_date_type === "DEL" ? "Potwierdzona data doręczenia"
+      : row.delivery_date_type === "SDD" ? "Planowana data dostawy (SDD)"
+      : row.delivery_date_type || "Brak informacji";
+
+    const weightLabel = row.weight_value
+      ? row.weight_value + " " + (row.weight_unit === "KGS" ? "kg"
+        : row.weight_unit === "LBS" ? "lb" : row.weight_unit) : "—";
+    addCell(tr, weightLabel, "weight-cell");
+
+    const upsCell = document.createElement("td");
+    const upsTag = document.createElement("span");
+    const upsText = row.ups_status || "Bez statusu";
+    upsTag.textContent = upsText;
+    const lowerStatus = upsText.toLocaleLowerCase("pl-PL");
+    const upsKind = /doręczon|dostarczon|delivered/.test(lowerStatus) ? "ready"
+      : /wyjątek|problem|błąd|zwrócon|opóźnion|exception|failed/.test(lowerStatus) ? "retry"
+      : /w drodze|w tranzycie|transport|on the way|in transit/.test(lowerStatus) ? "processing"
+      : "queued";
+    upsTag.className = "status ups-status " + upsKind;
+    const statusDetails = [upsText,
+      row.ups_status_code ? "Kod UPS: " + row.ups_status_code : "",
+      row.description && row.description !== upsText ? row.description : "",
+      row.error && row.error !== row.description ? row.error : ""].filter(Boolean).join(" · ");
+    upsTag.dataset.tooltip = statusDetails;
+    upsTag.setAttribute("aria-label", statusDetails);
+    upsTag.setAttribute("tabindex", "0");
+    upsCell.append(upsTag);
+    tr.append(upsCell);
+
+    const statusCell = document.createElement("td");
+    const tag = document.createElement("span");
+    const info = statusInfo(row);
+    tag.className = "status " + info[1];
+    tag.textContent = info[0];
+    tag.title = info[2];
+    statusCell.title = row.error || row.description || info[2];
+    statusCell.append(tag);
+    tr.append(statusCell);
+
     const doc = document.createElement("td");
     doc.className = "compact-document";
     if (row.state === "ready") {
       const link = document.createElement("a");
       link.className = "status ready document-bubble";
       link.href = "/api/shipments/" + encodeURIComponent(row.tracking) + "/pdf";
-      link.textContent = "PDF";
-      link.title = "Pobierz potwierdzenie doręczenia";
+      link.textContent = "↓ PDF";
+      link.setAttribute("download", "");
+      link.setAttribute("aria-label", "Pobierz PDF potwierdzenia doręczenia " + row.tracking);
+      link.title = "Pobierz potwierdzenie doręczenia (PDF)";
       doc.append(link);
     } else {
       const last = row.last_attempt_at
@@ -143,25 +212,11 @@ function renderRows() {
       bubble.title = "Próby: " + row.attempts + " · Ostatnio: " + last + next
         + (row.error ? " · " + row.error : "");
       bubble.setAttribute("aria-label", "Historia operacji " + row.tracking);
-      bubble.addEventListener("click", () => {
-        $("tab-logs").click();
-        $("logs-tracking").value = row.tracking;
-        void refreshLogs();
-      });
+      bubble.dataset.tracking = row.tracking;
+      bubble.addEventListener("click", () => openShipmentLogs(row));
       doc.append(bubble);
     }
     tr.append(doc);
-    const weightLabel = row.weight_value
-      ? row.weight_value + " " + (row.weight_unit === "KGS" ? "kg"
-        : row.weight_unit === "LBS" ? "lb" : row.weight_unit) : "—";
-    addCell(tr, weightLabel, "weight-cell");
-    const deliveryDay = row.delivery_date && /^\d{8}$/.test(row.delivery_date)
-      ? row.delivery_date.slice(0, 4) + "-" + row.delivery_date.slice(4, 6)
-        + "-" + row.delivery_date.slice(6) : "—";
-    const dateCell = addCell(tr, deliveryDay, "delivery-date");
-    dateCell.title = row.delivery_date_type === "DEL" ? "Potwierdzona data doręczenia"
-      : row.delivery_date_type === "SDD" ? "Planowana data dostawy (SDD)"
-      : row.delivery_date_type || "Brak informacji";
     tbody.append(tr);
   }
   $("page-info").textContent = total
@@ -172,6 +227,34 @@ function renderRows() {
   $("select-page").checked = rows.length > 0 && rows.every((r) => selected.has(r.tracking));
   syncSelected();
 }
+
+const upsTooltip = document.createElement("div");
+upsTooltip.className = "ups-tooltip";
+upsTooltip.setAttribute("role", "tooltip");
+upsTooltip.hidden = true;
+document.body.append(upsTooltip);
+function showUpsTooltip(target) {
+  if (!target || !target.classList.contains("ups-status")) return;
+  upsTooltip.textContent = target.dataset.tooltip || target.textContent;
+  upsTooltip.hidden = false;
+  const box = target.getBoundingClientRect();
+  upsTooltip.style.left = Math.max(8, Math.min(box.left, window.innerWidth - upsTooltip.offsetWidth - 8)) + "px";
+  const above = box.top - upsTooltip.offsetHeight - 8;
+  upsTooltip.style.top = (above >= 8 ? above : box.bottom + 8) + "px";
+}
+function hideUpsTooltip() { upsTooltip.hidden = true; }
+$("rows").addEventListener("mouseover", (event) => {
+  if (event.target.closest) showUpsTooltip(event.target.closest(".ups-status"));
+});
+$("rows").addEventListener("mouseout", (event) => {
+  if (event.target.closest && event.target.closest(".ups-status")) hideUpsTooltip();
+});
+$("rows").addEventListener("focusin", (event) => {
+  if (event.target.closest) showUpsTooltip(event.target.closest(".ups-status"));
+});
+$("rows").addEventListener("focusout", hideUpsTooltip);
+
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") hideUpsTooltip(); });
 
 function syncSelected() {
   const count = selected.size;
@@ -219,11 +302,28 @@ async function refresh() {
     $("refresh-status").textContent = "Aktualizacja: " + new Date().toLocaleTimeString("pl-PL");
     renderRows();
   } catch (error) {
-    $("refresh-status").textContent = "Problem z połączeniem";
-    // Do not replace a successful import notification with a refresh error.
-    if ($("notice").hidden) notice(error.message, true);
+    // A background GET failure is not an import failure. Keep existing rows
+    // and retry on the next refresh, without changing the import notice.
+    $("refresh-status").textContent = "Nie udało się odświeżyć: "
+      + error.message + " · ponowna próba automatycznie";
   }
 }
+
+function setIntakeCollapsed(collapsed) {
+  $("intake-content").hidden = collapsed;
+  $("intake-panel").classList.toggle("is-collapsed", collapsed);
+  $("intake-toggle").setAttribute("aria-expanded", String(!collapsed));
+  $("intake-toggle").textContent = collapsed ? "+ Rozwiń" : "− Zwiń";
+  saveCookie("ups_pod_intake_collapsed", collapsed ? "1" : "0");
+}
+$("intake-toggle").addEventListener("click", () => {
+  setIntakeCollapsed(!$("intake-content").hidden);
+});
+setIntakeCollapsed(getCookie("ups_pod_intake_collapsed") === "1");
+$("query").value = getCookie("ups_pod_query").slice(0, 200);
+document.querySelectorAll("[data-scope]").forEach((button) => {
+  button.classList.toggle("active", button.dataset.scope === scope);
+});
 
 $("intake-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -253,6 +353,7 @@ $("intake-form").addEventListener("submit", async (event) => {
 document.querySelectorAll("[data-scope]").forEach((button) => {
   button.addEventListener("click", async () => {
     scope = button.dataset.scope;
+    saveCookie("ups_pod_scope", scope);
     offset = 0;
     document.querySelectorAll("[data-scope]").forEach((b) =>
       b.classList.toggle("active", b === button));
@@ -262,11 +363,13 @@ document.querySelectorAll("[data-scope]").forEach((button) => {
 
 $("month-filter").addEventListener("change", () => {
   activeMonth = $("month-filter").value;
+  saveCookie("ups_pod_month", activeMonth);
   offset = 0;
   void refresh();
 });
 let searchTimeout;
 $("query").addEventListener("input", () => {
+  saveCookie("ups_pod_query", $("query").value.slice(0, 200));
   clearTimeout(searchTimeout);
   searchTimeout = setTimeout(() => { offset = 0; void refresh(); }, 300);
 });
@@ -389,10 +492,26 @@ async function refreshLogs(older = false) {
 }
 $("tab-logs").addEventListener("click", () => {
   $("shipments-panel").hidden = true; $("logs-panel").hidden = false;
+  if (!listReturnPoint) $("logs-return").hidden = true;
   void refreshLogs();
 });
 $("tab-shipments").addEventListener("click", () => {
   $("shipments-panel").hidden = false; $("logs-panel").hidden = true;
+  $("logs-return").hidden = true;
+});
+$("logs-return").addEventListener("click", () => {
+  const point = listReturnPoint;
+  if (!point) return;
+  $("tab-shipments").click();
+  const table = document.querySelector("#shipments-panel .table-wrap");
+  table.scrollLeft = point.tableX;
+  requestAnimationFrame(() => {
+    window.scrollTo(point.scrollX, point.scrollY);
+    const target = [...document.querySelectorAll("#rows .document-bubble")]
+      .find((button) => button.dataset.tracking === point.tracking);
+    if (target) target.focus({ preventScroll: true });
+  });
+  listReturnPoint = null;
 });
 $("logs-older").addEventListener("click", () => void refreshLogs(true));
 $("logs-tracking").addEventListener("input", () => { logBefore = 0; void refreshLogs(false); });

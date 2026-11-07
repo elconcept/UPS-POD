@@ -23,7 +23,9 @@
   {% endif %}
   <nav aria-label="Zakładki"><button id="tab-shipments" type="button">Przesyłki</button>
   <button id="tab-logs" type="button">Logi</button></nav>
-  <section id="logs-panel" class="panel" hidden><h2>Dziennik operacji</h2>
+  <section id="logs-panel" class="panel" hidden>
+  <button id="logs-return" class="secondary logs-return" type="button" hidden>← Wróć do miejsca na liście przesyłek</button>
+  <h2>Dziennik operacji</h2>
   <div class="log-toolbar" role="group" aria-label="Filtr poziomu logów">
     <button type="button" class="log-filter active" data-log-scope="all">Wszystkie</button>
     <button type="button" class="log-filter" data-log-scope="problems">WARNING + ERROR</button>
@@ -48,14 +50,17 @@
     <article class="stat"><div>W kolejce / przetwarzanie</div><strong id="count-active">—</strong></article>
     <article class="stat problem"><div>Do ponowienia</div><strong id="count-retry">—</strong></article>
   </section>
-  <section class="panel intake">
-    <div class="section-head"><div><h2>Import UPS i Amazon FBA</h2><p>Jedno pole: numery UPS albo Shipment ID | numery UPS. Obsługiwane są także wielowierszowe dane z Excela.</p></div></div>
+  <section class="panel intake" id="intake-panel">
+    <div class="section-head"><div><h2>Import UPS i Amazon FBA</h2><p>Jedno pole: numery UPS albo Shipment ID | numery UPS. Obsługiwane są także wielowierszowe dane z Excela.</p></div>
+      <button type="button" class="secondary intake-toggle" id="intake-toggle" aria-expanded="true" aria-controls="intake-content">− Zwiń</button></div>
+    <div id="intake-content">
     <form id="intake-form">
       <textarea id="trackings" name="trackings" rows="5" spellcheck="false" placeholder="FBA15MSX7FKL&#9;1Z004R316807294692; 1Z004R316805636772&#10;FBA1234567 1Z004R316836426182&#10;1Z004R316834147988"></textarea>
       <div class="form-bar"><span>Istniejące numery nie są duplikowane; jeśli podasz im FBA, przypisanie zostanie uzupełnione. Data nadania pochodzi z UPS.</span>
         <button type="submit" id="add-btn">Importuj / przypisz FBA</button></div>
     </form>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    </div>
   </section>
   <section class="panel">
     <div class="section-head">
@@ -79,10 +84,9 @@
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th><input type="checkbox" id="select-page" title="Zaznacz widoczne numery"></th>
-          <th>Numer UPS</th><th>Stan kolejki</th><th>Status UPS</th><th>Data nadania</th><th>Shipment ID Amazon FBA</th><th>Dokument</th><th>Waga</th><th>Data doręczenia</th>
+          <th class="fba-header"><label><input type="checkbox" id="select-page" title="Zaznacz widoczne numery"><span>Shipment ID Amazon FBA</span></label></th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>Waga</th><th>Status UPS</th><th>Stan kolejki</th><th>Dokument</th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="9" class="empty">Ładowanie przesyłek…</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="8" class="empty">Ładowanie przesyłek…</td></tr></tbody>
       </table>
     </div>
     <footer class="pagination">

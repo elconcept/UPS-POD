@@ -52,3 +52,25 @@ td.compact-document{white-space:nowrap;min-width:82px;width:96px}
 .receiver-cell{font-size:12px;max-width:180px;overflow:hidden;text-overflow:ellipsis}
 #shipments-panel .table-wrap{overflow:auto}
 #shipments-panel th,#shipments-panel td{padding:9px 8px}
+
+/* Usability: persistent collapsible intake, in-place log return, full UPS exception tooltip. */
+.intake-toggle{white-space:nowrap;min-width:105px}
+.intake.is-collapsed{padding-top:13px;padding-bottom:13px}
+.intake.is-collapsed .section-head{margin-bottom:0;align-items:center}
+.intake.is-collapsed .section-head p{display:none}
+.intake.is-collapsed .section-head h2{font-size:15px}
+.intake.is-collapsed #intake-content{display:none}
+.logs-return{margin:0 0 15px;padding:8px 13px}
+.ups-tooltip{position:fixed;z-index:9999;pointer-events:none;background:#223b53;color:white;
+  padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.45;max-width:min(380px,90vw);
+  white-space:normal;overflow-wrap:anywhere;box-shadow:0 6px 20px #172c4440}
+.ups-status{cursor:help}
+.ups-status:focus-visible{outline:2px solid #3477ac;outline-offset:2px}
+td.track a{color:inherit;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
+td.track a:hover,td.track a:focus{color:#1465b0}
+.document-bubble.ready{white-space:nowrap}
+@media(max-width:900px){.intake .section-head{flex-direction:row;align-items:center;flex-wrap:wrap}}
+
+.fba-header label{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+.fba-header input[type=checkbox]{flex-shrink:0;margin:0}
+.fba-cell input[type=checkbox]{margin:0 9px 0 0;vertical-align:middle}

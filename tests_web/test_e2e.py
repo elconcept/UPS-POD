@@ -519,6 +519,103 @@ def test_removed_delivery_columns_from_web_table(application):
     script = (root / "web/static/app.js").read_text()
     for name in ("<th>Zdjęcie</th>", "<th>Godzina doręczenia</th>", "<th>Odebrał</th>"):
         assert name not in template
-    assert 'colspan="9"' in template
+    assert 'colspan="8"' in template
     assert "tr.append(photoCell)" not in script
     assert 'addCell(tr, row.received_by' not in script
+
+
+def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
+    """Browser regression for UI state; UPS API is not replaced by a simulator."""
+    import service
+
+    exception, waiting, ready = (
+        "1Z004R316807294692", "1Z004R316805636772", "1Z004R316836426182"
+    )
+    service.add_numbers(" ".join((exception, waiting, ready)))
+    with service.connection() as db:
+        db.execute(
+            "UPDATE shipments SET state='retry', ups_status=?, ups_status_code=?,"
+            " description=?, error=?, shipment_id=? WHERE tracking=?",
+            ("Wyjątek w doręczeniu", "X", "Nieprawidłowy adres odbiorcy",
+             "Brak potwierdzenia", "FBA15MSX7FKL", exception),
+        )
+        db.execute(
+            "UPDATE shipments SET state='retry', ups_status=?, description=?, error=?"
+            " WHERE tracking=?",
+            ("W drodze", "W drodze", "Przesyłka jeszcze niedoręczona.", waiting),
+        )
+    pdf_path = service.document_target(ready)
+    pdf_path.write_bytes(b"%PDF-1.4\nregression fixture\n")
+    service.mark_ready(ready, "Doręczono", "", str(pdf_path), "", "pdf", "fixture")
+
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page(viewport={"width": 920, "height": 720})
+            page.goto(f"http://127.0.0.1:{server.server_port}")
+            expect(page.locator("#rows tr")).to_have_count(3)
+            headings = page.locator("#shipments-panel thead th").all_text_contents()
+            assert headings == [
+                "Shipment ID Amazon FBA", "Numer UPS", "Data nadania",
+                "Data doręczenia", "Waga", "Status UPS", "Stan kolejki", "Dokument",
+            ]
+            link = page.locator(f'#rows tr[data-tracking="{exception}"] td.track a')
+            assert link.get_attribute("href") == (
+                "https://www.ups.com/track?tracknum=" + exception
+            )
+            assert link.get_attribute("target") == "_blank"
+            assert "noopener" in link.get_attribute("rel")
+            pill = page.locator(f'#rows tr[data-tracking="{exception}"] .ups-status')
+            pill.hover()
+            expect(page.locator(".ups-tooltip")).to_be_visible()
+            expect(page.locator(".ups-tooltip")).to_contain_text("Nieprawidłowy adres")
+            expect(page.locator(".ups-tooltip")).to_contain_text("Kod UPS: X")
+            assert page.locator(f'#rows tr[data-tracking="{ready}"] .document-bubble').inner_text() == "↓ PDF"
+
+            page.locator("#intake-toggle").click()
+            expect(page.locator("#intake-content")).to_be_hidden()
+            assert page.evaluate('document.cookie.includes("ups_pod_intake_collapsed=1")')
+            page.reload()
+            expect(page.locator("#intake-content")).to_be_hidden()
+            page.locator("#intake-toggle").click()
+            expect(page.locator("#intake-content")).to_be_visible()
+
+            page.locator("#month-filter").select_option("all")
+            page.locator("#query").fill("1Z")
+            expect(page.locator("#rows tr")).to_have_count(3)
+            page.locator('[data-scope="missing"]').click()
+            expect(page.locator("#rows tr")).to_have_count(2)
+            page.reload()
+            expect(page.locator('[data-scope="missing"]')).to_have_class("filter active")
+            expect(page.locator("#query")).to_have_value("1Z")
+            expect(page.locator("#month-filter")).to_have_value("all")
+            page.locator(f'#rows tr[data-tracking="{waiting}"] .document-bubble').click()
+            expect(page.locator("#logs-panel")).to_be_visible()
+            expect(page.locator("#logs-tracking")).to_have_value(waiting)
+            expect(page.locator("#logs-return")).to_be_visible()
+            saved_position = page.evaluate("({ x: listReturnPoint.scrollX, y: listReturnPoint.scrollY })")
+            page.locator("#logs-return").click()
+            page.wait_for_function(
+                "p => Math.abs(window.scrollY-p.y) < 5 && Math.abs(window.scrollX-p.x) < 5",
+                arg=saved_position,
+            )
+            expect(page.locator("#shipments-panel")).to_be_visible()
+            expect(page.locator("#logs-panel")).to_be_hidden()
+            expect(page.locator("#query")).to_have_value("1Z")
+            expect(page.locator("#month-filter")).to_have_value("all")
+            expect(page.locator(f'#rows tr[data-tracking="{waiting}"]')).to_be_visible()
+
+            # A gateway failure on automatic refresh must not render as an import error.
+            page.route("**/api/shipments?*", lambda route: route.fulfill(
+                status=502, content_type="text/html", body="Bad gateway"))
+            page.evaluate("refresh()")
+            expect(page.locator("#refresh-status")).to_contain_text("HTTP 502")
+            expect(page.locator("#notice")).to_be_hidden()
+            assert page.locator("#rows tr").count() == 2
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
