@@ -41,7 +41,7 @@ def test_excel_parser_and_concurrent_dedup(application):
     assert sum(r["added"] for r in results) == 3
     with service.connection() as db:
         assert db.execute("SELECT count(*) FROM shipments").fetchone()[0] == 3
-    assert len(service.audit_rows()) == 8
+    assert len([r for r in service.audit_rows() if r["operation"] == "import"]) == 8
 
 
 def test_real_ups_browser_worker_pdf_zip_persistence(application):
@@ -168,6 +168,9 @@ def test_fba_paste_many_trackings_filename_and_atomic_conflict(application):
                                      f"2026-10-30\tFBA15MSX7FKL\t{a}; {b}")
     assert len(entries) == 2
     assert service.assign_fba_rows(entries) == {"assigned": 2, "changed": 2}
+    # Date supplied in pasted third column is ignored: UPS pickupDate is the source.
+    assert all(row["ship_date"] == "" for row in entries)
+    service.save_tracking_detail(a, {"ship_date": "2026-10-30", "ship_date_source": "ups_pickup_date"})
     assert service.export_filename(a) == f"2026-10-30-FBA15MSX7FKL-{a}.pdf"
     assert service.assign_fba_rows(entries)["changed"] == 0
     with pytest.raises(ValueError, match="Konflikt FBA"):
@@ -319,3 +322,96 @@ def test_migrate_legacy_pdf_to_mounted_archive_and_keep_backup(application):
     # Repeated migrations do not create duplicates.
     service.init_db()
     assert len(list(service.DOCUMENTS_DIR.glob("*.pdf"))) == 1
+
+
+
+def test_ordered_mixed_fba_ups_import_with_garbage_and_excel_cell(application):
+    import service
+    a, b, c, d = (
+        "1Z004R316807294692", "1Z004R316805636772",
+        "1Z004R316836426182", "1Z004R316834147988",
+    )
+    source = ("noise FBA1234567 . " + a + " " + b
+              + "\n?? FBA15MSX7FKL\t" + c + ";" + d + " ; nonsense")
+    records, warning = service.parse_mixed_text(source)
+    assert [(r["tracking"], r["shipment_id"]) for r in records] == [
+        (a, "FBA1234567"), (b, "FBA1234567"),
+        (c, "FBA15MSX7FKL"), (d, "FBA15MSX7FKL")]
+    assert "NOISE" in warning and "NONSENSE" in warning
+    result = service.add_numbers(source)
+    assert result["added"] == 4
+    assert result["assigned"] == 4
+    assert result["rejected_count"] >= 2
+    with service.connection() as db:
+        mappings = dict(db.execute("SELECT tracking,shipment_id FROM shipments"))
+    assert mappings[a] == mappings[b] == "FBA1234567"
+    assert mappings[c] == mappings[d] == "FBA15MSX7FKL"
+
+
+def test_ups_without_fba_then_same_tracking_with_fba_is_updated(application):
+    import service
+    tracking = "1Z004R316805636772"
+    assert service.add_numbers(tracking)["added"] == 1
+    result = service.add_numbers("FBA1234567;;;; " + tracking)
+    assert result["added"] == 0 and result["existing"] == 1
+    assert result["assigned"] == 1 and result["changed"] == 1
+    assert service.export_filename(tracking) == f"BRAK_DATY-FBA1234567-{tracking}.pdf"
+    with pytest.raises(ValueError, match="Konflikt FBA"):
+        service.add_numbers("FBA7654321 " + tracking)
+    with service.connection() as db:
+        assert db.execute("SELECT shipment_id FROM shipments WHERE tracking=?",
+                          (tracking,)).fetchone()[0] == "FBA1234567"
+
+
+def test_waiting_tracking_gets_audit_history_and_no_false_error(application):
+    import service
+    tracking = "1Z004R316834147988"
+    service.add_numbers(tracking)
+    with service.connection() as db:
+        db.execute("DELETE FROM audit WHERE tracking=?", (tracking,))
+        db.execute("UPDATE shipments SET state='retry',error=?,description=?,attempts=1 "
+                   "WHERE tracking=?",
+                   ("Przesyłka jeszcze niedoręczona.", "W drodze", tracking))
+    service.init_db()
+    logs = service.audit_rows(tracking=tracking)
+    assert len(logs) == 1
+    assert logs[0]["operation"] == "awaiting_delivery"
+    assert logs[0]["level"] == "INFO"
+    with application.test_client() as client:
+        rows = client.get("/api/logs?tracking=" + tracking).get_json()["items"]
+        assert len(rows) == 1 and rows[0]["tracking"] == tracking
+        assert client.get("/api/logs?tracking=garbage!").status_code == 400
+
+
+def test_browser_shift_checkbox_bulk_fba_branding_and_status_pills(application):
+    import service
+    nums = [f"1Z{i:016d}" for i in range(11, 19)]
+    service.add_numbers(" ".join(nums))
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET ups_status='W drodze' WHERE tracking=?", (nums[0],))
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{server.server_port}")
+            assert "ElectroSmart UPS-POD" in page.title()
+            assert "WDT" not in page.content()
+            expect(page.locator("#rows input[type=checkbox]")).to_have_count(8)
+            page.locator("#rows input[type=checkbox]").nth(0).check()
+            page.locator("#rows input[type=checkbox]").nth(5).click(modifiers=["Shift"])
+            expect(page.locator("#rows input[type=checkbox]:checked")).to_have_count(6)
+            expect(page.locator("#fba-selected")).to_contain_text("(6)")
+            page.on("dialog", lambda dialog: dialog.accept("FBA1234567"))
+            page.locator("#fba-selected").click()
+            expect(page.locator("#rows .fba-id")).to_have_count(6)
+            with service.connection() as db:
+                assert db.execute("SELECT count(*) FROM shipments WHERE shipment_id=?",
+                                  ("FBA1234567",)).fetchone()[0] == 6
+            assert page.locator("#rows .ups-status.status").count() == 8
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
