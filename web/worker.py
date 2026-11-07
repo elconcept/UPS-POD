@@ -90,6 +90,10 @@ def process_one(number: str, client: core.KlientUPS) -> str:
         service.audit("worker", "tracking_start", number)
         code, json_body, text = client.sledz(number)
         detail = core.analizuj(code, json_body, text)
+        if isinstance(json_body, dict):
+            service.save_tracking_fields(json_body)
+        if detail['ok']:
+            service.save_tracking_detail(number, detail)
         service.audit("worker", "tracking_result", number, code,
                       detail.get("opis", "") or detail.get("blad", ""))
         if not detail["ok"]:
@@ -160,6 +164,7 @@ def main() -> None:
     service.audit("worker", "startup", description=f"Odzyskano zadań {recovered}.")
     logger.info("UPS POD worker started. Sequential processing, retry every %s hours.", RETRY_HOURS)
     client = None
+    backfill_attempted = False
     while True:
         try:
             cid, secret = credentials()
@@ -169,6 +174,27 @@ def main() -> None:
                         os.getenv("UPS_POD_ADRES_API", "https://onlinetools.ups.com"),
                         cid, secret, numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
                     )
+                if not backfill_attempted:
+                    backfill_attempted = True
+                    with service.connection() as db:
+                        pending = [r[0] for r in db.execute(
+                            "SELECT tracking FROM shipments WHERE state='ready' AND ups_status='' LIMIT 100"
+                        )]
+                    for tracking in pending:
+                        try:
+                            code, payload, raw_text = client.sledz(tracking)
+                            detail = core.analizuj(code, payload, raw_text)
+                            if isinstance(payload, dict):
+                                service.save_tracking_fields(payload)
+                            if detail['ok']:
+                                service.save_tracking_detail(tracking, detail)
+                                service.audit("worker", "metadata_backfill", tracking, code)
+                            else:
+                                service.audit("worker", "metadata_backfill_failed", tracking, code,
+                                              detail.get("blad", ""))
+                        except Exception as exc:
+                            service.audit("worker", "metadata_backfill_failed", tracking,
+                                          description=type(exc).__name__)
                 result = run_once(client)
                 if result is not None:
                     continue
