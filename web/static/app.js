@@ -77,6 +77,7 @@ function renderRows() {
     const shipDate = addCell(tr, row.ship_date || "—", "ship-date");
     shipDate.title = {
       manual: "Data podana przez użytkownika / import FBA",
+      ups_pickup_date: "Pole pickupDate zwrócone przez UPS (data odbioru/nadania wg przewoźnika)",
       ups_pickup_scan: "Data skanu odbioru przesyłki przez UPS",
       pod_shipped_or_billed: "Data «Shipped or Billed on» z dokumentu UPS; nie musi oznaczać odbioru fizycznego",
     }[row.ship_date_source] || "Data nieznana";
