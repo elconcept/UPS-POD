@@ -13,18 +13,15 @@ Puste pola wpisywania nowych danych oznaczają „pozostaw istniejące”, nie �
 
 ## Synology: .env, uprawnienia, kopia zapasowa
 
-Plik widoczny jako:
-- /volume2/docker/ups-pod/.env
+Synology używa dwóch plików o rozdzielonych uprawnieniach. To świadome ograniczenie dostępu: system plików odmówił założenia selektywnego ACL, dlatego nie rozszerzano prawa odczytu na grupę użytkowników.
 
-jest symbolicznym odnośnikiem do:
-- /volume2/docker/ups-pod/data/.env (wewnątrz kontenera: /data/.env)
+- /volume2/docker/ups-pod/.env — oryginalny plik bootstrapowy CI/CD, nadal 0600, właściciel UID 1029. Pozostaje niezmieniony przez formularz, żeby proces wdrożeniowy mógł go odczytać.
+- /volume2/docker/ups-pod/data/.env — rzeczywisty, aktualizowany przez GUI plik konfiguracji UPS i Google; wewnątrz kontenera /data/.env, 0600, właściciel UID 1031.
+- /volume2/docker/ups-pod/.env.pre-web-config-20261107.bak — niezmieniona kopia oryginalnego pliku bootstrapowego.
 
-Podczas migracji skopiowano dotychczasowe dane UPS bez zmiany wartości i zachowano wersję przed migracją w:
-- /volume2/docker/ups-pod/.env.pre-web-config-20261107.bak
+Oba pliki na moment migracji zawierały identyczne dotychczasowe wartości UPS. Od tej pory **runtime /data/.env ma pierwszeństwo** dla UPS i Google OAuth. Worker czyta ten plik dynamicznie; po zmianie Client ID/Secret odbudowuje klienta UPS w kolejnej iteracji. W razie ponownego wdrożenia obraz nadal korzysta z /data/.env. Test produkcyjnego UPS w deploy.sh montuje katalog /data tylko do odczytu wewnątrz kontenera UID 1031, a klient Docker procesu CI/CD UID 1029 nie potrzebuje uprawnień do tego katalogu.
 
-Dane są zapisane z właścicielem UID 1031 (upspodsvc), uprawnieniami 0600. Katalog data ma uprawnienia 0700. Aktualizacja odbywa się atomowo przez plik tymczasowy i os.replace, z blokadą równoległych zapisów, bez dodawania sekretów do GitHub.
-
-Worker UPS odczytuje bieżące UPS Client ID / Secret przed kolejną operacją i odbudowuje klienta, gdy dane się zmienią. Nie trzeba ręcznie edytować pliku ani przebudowywać obrazu przy zmianie samych danych UPS.
+Wpisy i tokeny nie są przesyłane do GitHub. Zapis GUI jest atomowy przez os.replace z blokadą równoległych zapisów. Pozostawione pustymi pola edycji oznaczają „bez zmiany”.
 
 ## Połączenie z Gmail — konfiguracja operatora
 

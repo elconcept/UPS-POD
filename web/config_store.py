@@ -9,6 +9,7 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -26,7 +27,10 @@ SAFE_VALUE = re.compile(r"^[A-Za-z0-9._~!+:/=@%-]{1,512}$")
 
 
 def path() -> Path:
-    return service.DATA_DIR / ".env"
+    # The isolated deployment E2E container can read the runtime .env via a
+    # read-only bind, without granting deploy-hook access to /data on the host.
+    override = os.getenv("UPS_POD_CONFIG_ENV_PATH", "")
+    return Path(override) if override.startswith("/config/") else service.DATA_DIR / ".env"
 
 
 def _read() -> tuple[list[str], dict[str, str]]:
@@ -116,6 +120,11 @@ def update(values: dict[str, str]) -> list[str]:
                 stream.write("\n".join(result).rstrip("\n") + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+            # Preserve the existing narrow read-only POSIX ACL for the
+            # Synology deployment user when replacing the file atomically.
+            # No ACL means the new file remains owner-only (0600).
+            if file.is_file():
+                shutil.copystat(file, temp)
             os.replace(temp, file)
             directory = os.open(file.parent, os.O_RDONLY)
             try:

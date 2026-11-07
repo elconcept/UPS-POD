@@ -9,6 +9,8 @@ docker run --rm -i \
   --network ups-pod_ups_outbound \
   --user 1031:100 \
   --env-file /volume2/docker/ups-pod/.env \
+  -v /volume2/docker/ups-pod/data:/config:ro \
+  -e UPS_POD_CONFIG_ENV_PATH=/config/.env \
   -e UPS_POD_HOME=/tmp/ups-pod-ci \
   -e UPS_POD_PDF_DIR=/tmp/ups-pod-ci/pod \
   -e HOME=/tmp \
@@ -19,11 +21,11 @@ import os
 from pathlib import Path
 import ups_pod
 import service
+import config_store
 import app
 service.init_db()
 test_number = os.getenv("UPS_E2E_TRACKING") or "1Z004R316836426182"
-client_id = os.getenv("UPS_CLIENT_ID") or os.getenv("client_id")
-client_secret = os.getenv("UPS_CLIENT_SECRET") or os.getenv("client_secret")
+client_id, client_secret = config_store.ups_credentials()
 assert client_id and client_secret, "UPS API credentials missing"
 api = ups_pod.KlientUPS(
     os.getenv("UPS_POD_ADRES_API", "https://onlinetools.ups.com"),
