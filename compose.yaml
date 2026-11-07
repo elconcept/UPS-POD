@@ -2,12 +2,11 @@ name: ups-pod
 services:
   init:
     image: busybox:1.37
-    command: ["sh","-c","mkdir -p /data/pod /data/source && chown -R 10001:10001 /data && chmod 600 /deploy/.env"]
+    command: ["sh","-c","mkdir -p /data/pod /data/source && chown -R 10001:10001 /data  "]
     restart: "no"
     network_mode: none
     volumes:
       - /volume2/docker/ups-pod/data:/data
-      - /volume2/docker/ups-pod/.env:/deploy/.env
     cap_drop: [ALL]
     cap_add: [CHOWN, FOWNER]
     security_opt: ["no-new-privileges:true"]
