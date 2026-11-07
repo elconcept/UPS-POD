@@ -51,13 +51,16 @@ PY
 # Account mapping on Synology: upspodsvc UID 1031, users GID 100.
 # A one-time safe ownership migration is required for persistent SQLite and source files.
 # Complete image build before stopping running application processes.
-migration_marker=/volume2/docker/ups-pod/data/.uid_1031_migrated
-if [ ! -f "$migration_marker" ]; then
+# The repository owner cannot stat /data (UID 1031, mode 700). Check the
+# marker as root INSIDE a disposable container; never mistake EACCES for missing.
+if ! docker run --rm --user 0:0 --entrypoint /bin/sh \
+  -v /volume2/docker/ups-pod/data:/data:ro \
+  ups-pod-web:local -c 'test -f /data/.uid_1031_migrated'; then
   docker stop ups-pod-worker ups-pod-web 2>/dev/null || true
   docker run --rm --user 0:0 --entrypoint /bin/sh \
     -v /volume2/docker/ups-pod/data:/data \
-    ups-pod-web:local -c 'chown -R 1031:100 /data && chmod 700 /data'
-  touch "$migration_marker"
+    ups-pod-web:local -c 'chown -R 1031:100 /data && chmod 700 /data && \
+      touch /data/.uid_1031_migrated && chown 1031:100 /data/.uid_1031_migrated'
 fi
 docker compose -p ups-pod -f compose.yaml up -d --no-build --remove-orphans --wait --wait-timeout 150
 printf 'UPS-POD deployed %s\n' "$revision"
