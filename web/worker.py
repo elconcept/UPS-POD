@@ -1,4 +1,4 @@
-"""Sequential UPS POD worker. Runs separately from the HTTP server."""
+"""Sequential UPS POD worker. Supervised alongside the web process in one container."""
 from __future__ import annotations
 
 import hashlib
@@ -81,8 +81,11 @@ def is_pdf(path: Path) -> bool:
 
 def process_one(number: str, client: core.KlientUPS) -> str:
     """Check one package; preserve UPS original and a PDF in durable cache."""
-    target = service.DOCUMENTS_DIR / (number + ".pdf")
-    if is_pdf(target):
+    with service.connection() as db:
+        existing = db.execute("SELECT pod_path FROM shipments WHERE tracking=?",
+                              (number,)).fetchone()
+    target = Path(existing["pod_path"]).resolve() if existing and existing["pod_path"] else None
+    if target and target.is_relative_to(service.DOCUMENTS_DIR.resolve()) and is_pdf(target):
         service.mark_ready(number, "POD w lokalnej pamięci podręcznej", "", str(target), "",
                            "pdf", hashlib.sha256(target.read_bytes()).hexdigest())
         return "ready"
@@ -113,6 +116,7 @@ def process_one(number: str, client: core.KlientUPS) -> str:
             )
             return "retry"
 
+        target = service.document_target(number)
         raw = detail["pod"]
         typ = detail["pod_typ"]
         suffix = {"pdf": ".pdf", "html": ".html", "gif": ".gif",
@@ -199,7 +203,7 @@ def run_once(client: core.KlientUPS | None = None) -> str | None:
             return "retry"
         client = core.KlientUPS(
             os.getenv("UPS_POD_ADRES_API", "https://onlinetools.ups.com"),
-            cid, secret, numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
+            cid, secret, jezyk="pl_PL", numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
         )
     result = process_one(number, client)
     service.audit("worker", result, number)
@@ -227,7 +231,7 @@ def main() -> None:
                 if client is None:
                     client = core.KlientUPS(
                         os.getenv("UPS_POD_ADRES_API", "https://onlinetools.ups.com"),
-                        cid, secret, numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
+                        cid, secret, jezyk="pl_PL", numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
                     )
                 if not backfill_attempted:
                     backfill_attempted = True
