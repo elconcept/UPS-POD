@@ -290,8 +290,8 @@ def claim_next() -> str | None:
             "last_attempt_at=?,updated_at=?,error='' WHERE tracking=?",
             (now, now, number),
         )
-        audit("worker", "attempt_start", number, description="Zlecono pobranie z UPS.")
-        return number
+    audit("worker", "attempt_start", number, description="Zlecono pobranie z UPS.")
+    return number
 
 
 def mark_ready(number: str, description: str, delivered_at: str, pod_path: str,
