@@ -49,23 +49,13 @@
     <article class="stat problem"><div>Do ponowienia</div><strong id="count-retry">—</strong></article>
   </section>
   <section class="panel intake">
-    <div class="section-head"><div><h2>Dodaj numery trackingowe</h2><p>Wklej numery UPS lub ciąg Shipment ID i numerów UPS — dowolne separatory.</p></div></div>
+    <div class="section-head"><div><h2>Import UPS i Amazon FBA</h2><p>Jedno pole: numery UPS albo Shipment ID | numery UPS. Obsługiwane są także wielowierszowe dane z Excela.</p></div></div>
     <form id="intake-form">
-      <textarea id="trackings" name="trackings" rows="5" spellcheck="false" placeholder="1Z1234567890123456, 1Z9876543210987654&#10;1Z1111111111111111"></textarea>
-      <div class="form-bar"><span>Numery już zapisane będą automatycznie pomijane. Przetwarzanie odbywa się w tle, jeden po drugim.</span>
-        <button type="submit" id="add-btn">Dodaj do kolejki</button></div>
+      <textarea id="trackings" name="trackings" rows="5" spellcheck="false" placeholder="FBA15MSX7FKL&#9;1Z004R316807294692; 1Z004R316805636772&#10;FBA1234567 1Z004R316836426182&#10;1Z004R316834147988"></textarea>
+      <div class="form-bar"><span>Istniejące numery nie są duplikowane; jeśli podasz im FBA, przypisanie zostanie uzupełnione. Data nadania pochodzi z UPS.</span>
+        <button type="submit" id="add-btn">Importuj / przypisz FBA</button></div>
     </form>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
-  </section>
-  <section class="panel intake fba-import">
-    <div class="section-head"><div><h2>Przypisz przesyłki do Amazon FBA</h2>
-      <p>Wklej Shipment ID | numery UPS</p></div></div>
-    <form id="fba-form">
-      <textarea id="fba-rows" rows="3" spellcheck="false" placeholder="FBA15MSX7FKL&#9;1Z004R316807294692; 1Z004R316805636772&#10;FBA1234567 1Z004R316836426182"></textarea>
-      <div class="form-bar"><span>Możesz wkleić kilka numerów UPS w jednej komórce. Data nadania jest pobierana automatycznie z UPS.</span>
-        <button type="submit" id="fba-import-btn">Przypisz FBA</button></div>
-    </form>
-    <div id="fba-notice" class="notice" role="status" hidden></div>
   </section>
   <section class="panel">
     <div class="section-head">
@@ -78,6 +68,8 @@
         <button class="filter" data-scope="ready" type="button">Pobrane</button>
         <button class="filter" data-scope="missing" type="button">Bez POD</button>
       </div>
+      <label class="month-label" for="month-filter">Miesiąc</label>
+      <select id="month-filter" aria-label="Miesiąc nadania"><option value="all">Wszystkie miesiące</option></select>
       <input type="search" id="query" placeholder="Szukaj numeru lub błędu…" aria-label="Szukaj" />
       <button class="secondary" type="button" id="download-selected">Pobierz zaznaczone ZIP</button>
       <button class="secondary" type="button" id="download-all">Pobierz wszystkie POD ZIP</button>
@@ -88,9 +80,9 @@
       <table>
         <thead><tr>
           <th><input type="checkbox" id="select-page" title="Zaznacz widoczne numery"></th>
-          <th>Numer UPS</th><th>Stan kolejki</th><th>Status przesyłki</th><th>Data nadania</th><th>Shipment ID Amazon FBA</th><th>Dokument</th>
+          <th>Numer UPS</th><th>Stan kolejki</th><th>Status UPS</th><th>Data nadania</th><th>Shipment ID Amazon FBA</th><th>Dokument</th><th>Zdjęcie</th><th>Waga</th><th>Godzina doręczenia</th><th>Data doręczenia</th><th>Odebrał</th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="7" class="empty">Ładowanie przesyłek…</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="12" class="empty">Ładowanie przesyłek…</td></tr></tbody>
       </table>
     </div>
     <footer class="pagination">

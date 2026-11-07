@@ -101,10 +101,18 @@ def create_app(testing: bool = False) -> Flask:
             limit = int(request.args.get("limit", 200))
             offset = int(request.args.get("offset", 0))
             result = service.list_numbers(request.args.get("q", ""),
-                                          request.args.get("scope", "all"), limit, offset)
+                                          request.args.get("scope", "all"), limit, offset,
+                                          request.args.get("month", "all"))
         except ValueError as exc:
             abort(400, str(exc))
         return jsonify(**result, stats=service.stats())
+
+    @web.get("/api/shipments/<tracking>/photo")
+    def package_photo(tracking: str):
+        target = service.photo_path(tracking.upper())
+        if target is None:
+            abort(404, "UPS nie udostępnił zdjęcia doręczenia.")
+        return send_file(target, conditional=True, max_age=0)
 
     @web.post("/api/shipments")
     def add():

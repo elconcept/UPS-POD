@@ -6,6 +6,10 @@ let scope = "all";
 let offset = 0;
 let total = 0;
 let rows = [];
+const monthParts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit"
+}).formatToParts(new Date()).map((part) => [part.type, part.value]));
+let activeMonth = monthParts.year + "-" + monthParts.month;
 const PAGE_SIZE = 200;
 const $ = (id) => document.getElementById(id);
 
@@ -36,8 +40,9 @@ function addCell(tr, text, className = "") {
 function statusInfo(row) {
   if (row.state === "ready") return ["POD pobrany", "ready", "Zarchiwizowano dokument POD"];
   if (row.state === "processing") return ["Pobieranie…", "processing", "Trwa komunikacja z UPS"];
-  if (row.state === "retry" && row.error === "Przesyłka jeszcze niedoręczona.")
-    return ["Oczekuje na doręczenie", "waiting", row.description || row.error];
+  if (row.state === "retry" && (row.error === "Przesyłka jeszcze niedoręczona."
+      || /w drodze|w tranzycie|in transit/i.test(row.ups_status || row.description)))
+    return ["W drodze", "waiting", row.description || row.error];
   if (row.state === "retry") return ["Brak POD / ponowienie", "retry", row.error || "Nie udało się pobrać dokumentu"];
   return ["W kolejce", "queued", "Oczekuje na automatyczne przetworzenie"];
 }
@@ -47,7 +52,7 @@ function renderRows() {
   tbody.replaceChildren();
   if (!rows.length) {
     const tr = document.createElement("tr");
-    addCell(tr, "Brak numerów odpowiadających filtrowi.", "empty").colSpan = 7;
+    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = 12;
     tbody.append(tr);
   }
   for (const row of rows) {
@@ -116,40 +121,79 @@ function renderRows() {
     fbaCell.append(fbaValue, edit);
     tr.append(fbaCell);
     const doc = document.createElement("td");
+    doc.className = "compact-document";
     if (row.state === "ready") {
       const link = document.createElement("a");
-      link.className = "download-link";
+      link.className = "status ready document-bubble";
       link.href = "/api/shipments/" + encodeURIComponent(row.tracking) + "/pdf";
-      link.textContent = "Pobierz PDF";
+      link.textContent = "PDF";
+      link.title = "Pobierz potwierdzenie doręczenia";
       doc.append(link);
     } else {
-      const detail = document.createElement("div");
-      detail.className = "document-details";
       const last = row.last_attempt_at
-        ? new Date(row.last_attempt_at).toLocaleString("pl-PL") : "Jeszcze nie sprawdzano";
+        ? new Date(row.last_attempt_at).toLocaleString("pl-PL") : "Nie sprawdzano";
       const next = row.next_attempt_at && row.state === "retry"
-        ? "; następna: " + new Date(row.next_attempt_at).toLocaleString("pl-PL") : "";
-      detail.textContent = "Próby: " + row.attempts + " · ostatnia: " + last + next;
-      if (row.error) {
-        const err = document.createElement("span");
-        err.className = row.error === "Przesyłka jeszcze niedoręczona." ? "muted" : "retry-description";
-        err.textContent = row.error;
-        doc.append(err);
-      }
-      doc.append(detail);
-      const logs = document.createElement("button");
-      logs.type = "button";
-      logs.className = "inline-edit";
-      logs.textContent = "Historia";
-      logs.setAttribute("aria-label", "Historia operacji " + row.tracking);
-      logs.addEventListener("click", () => {
+        ? " · Kolejna próba: " + new Date(row.next_attempt_at).toLocaleString("pl-PL") : "";
+      const bubble = document.createElement("button");
+      bubble.type = "button";
+      bubble.className = "status document-bubble " + (info[1] === "waiting" ? "waiting"
+        : info[1] === "retry" ? "retry" : "queued");
+      bubble.textContent = info[1] === "waiting" ? "Oczekuje"
+        : info[1] === "retry" ? "Błąd" : "—";
+      bubble.title = "Próby: " + row.attempts + " · Ostatnio: " + last + next
+        + (row.error ? " · " + row.error : "");
+      bubble.setAttribute("aria-label", "Historia operacji " + row.tracking);
+      bubble.addEventListener("click", () => {
         $("tab-logs").click();
         $("logs-tracking").value = row.tracking;
         void refreshLogs();
       });
-      doc.append(logs);
+      doc.append(bubble);
     }
     tr.append(doc);
+    const photoCell = document.createElement("td");
+    if (row.photo_filename) {
+      const photo = document.createElement("img");
+      photo.src = "/api/shipments/" + encodeURIComponent(row.tracking) + "/photo";
+      photo.alt = "Zdjęcie doręczenia UPS";
+      photo.className = "delivery-thumb";
+      photo.loading = "lazy";
+      photo.title = "Kliknij, aby otworzyć zdjęcie doręczenia";
+      const a = document.createElement("a");
+      a.href = photo.src;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.append(photo);
+      photoCell.append(a);
+    } else {
+      const missing = document.createElement("span");
+      missing.className = "muted photo-empty";
+      missing.textContent = "—";
+      missing.title = "UPS nie udostępnił zdjęcia doręczenia";
+      photoCell.append(missing);
+    }
+    tr.append(photoCell);
+    const weightLabel = row.weight_value
+      ? row.weight_value + " " + (row.weight_unit === "KGS" ? "kg"
+        : row.weight_unit === "LBS" ? "lb" : row.weight_unit) : "—";
+    addCell(tr, weightLabel, "weight-cell");
+    const showTime = (value) => /^\d{6}$/.test(value || "")
+      ? value.slice(0, 2) + ":" + value.slice(2, 4) : "";
+    const deliveryTime = row.delivery_time_start
+      ? showTime(row.delivery_time_start) + "–" + showTime(row.delivery_time_end)
+      : showTime(row.delivery_time_end) || "—";
+    const timeCell = addCell(tr, deliveryTime, "delivery-time");
+    timeCell.title = row.delivery_time_type === "DEL" ? "Potwierdzona godzina doręczenia"
+      : row.delivery_time_type === "EDW" ? "Przewidywane okno doręczenia (EDW)"
+      : row.delivery_time_type || "Brak informacji";
+    const deliveryDay = row.delivery_date && /^\d{8}$/.test(row.delivery_date)
+      ? row.delivery_date.slice(0, 4) + "-" + row.delivery_date.slice(4, 6)
+        + "-" + row.delivery_date.slice(6) : "—";
+    const dateCell = addCell(tr, deliveryDay, "delivery-date");
+    dateCell.title = row.delivery_date_type === "DEL" ? "Potwierdzona data doręczenia"
+      : row.delivery_date_type === "SDD" ? "Planowana data dostawy (SDD)"
+      : row.delivery_date_type || "Brak informacji";
+    addCell(tr, row.received_by || "—", "receiver-cell");
     tbody.append(tr);
   }
   $("page-info").textContent = total
@@ -177,6 +221,7 @@ function syncSelected() {
 async function refresh() {
   const params = new URLSearchParams({
     scope,
+    month: activeMonth,
     q: $("query").value.trim(),
     limit: String(PAGE_SIZE),
     offset: String(offset),
@@ -185,6 +230,20 @@ async function refresh() {
     const payload = await requestJson("/api/shipments?" + params);
     rows = payload.rows;
     total = payload.total;
+    const selector = $("month-filter");
+    const available = [...new Set([activeMonth, ...(payload.months || [])])]
+      .filter((m) => /^\d{4}-\d{2}$/.test(m)).sort().reverse();
+    const currentOptions = [...selector.options].map((o) => o.value);
+    if (JSON.stringify(currentOptions) !== JSON.stringify(["all", ...available])) {
+      selector.replaceChildren();
+      selector.add(new Option("Wszystkie miesiące", "all"));
+      for (const value of available) {
+        const name = new Intl.DateTimeFormat("pl-PL", { month: "long", year: "numeric" })
+          .format(new Date(value + "-01T12:00:00"));
+        selector.add(new Option(name, value));
+      }
+    }
+    selector.value = activeMonth;
     $("count-total").textContent = payload.stats.total;
     $("count-ready").textContent = payload.stats.ready;
     $("count-active").textContent = payload.stats.queued + payload.stats.processing;
@@ -230,6 +289,11 @@ document.querySelectorAll("[data-scope]").forEach((button) => {
   });
 });
 
+$("month-filter").addEventListener("change", () => {
+  activeMonth = $("month-filter").value;
+  offset = 0;
+  void refresh();
+});
 let searchTimeout;
 $("query").addEventListener("input", () => {
   clearTimeout(searchTimeout);
@@ -315,30 +379,6 @@ $("fba-selected").addEventListener("click", async () => {
   } catch (error) { notice(error.message, true); }
 });
 
-$("fba-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const text = $("fba-rows").value.trim();
-  const button = $("fba-import-btn");
-  const status = $("fba-notice");
-  status.hidden = false;
-  status.classList.remove("error");
-  if (!text) { status.textContent = "Wklej tabelę z Excela."; status.classList.add("error"); return; }
-  button.disabled = true;
-  try {
-    const result = await requestJson("/api/fba", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    status.textContent = "Rozpoznano UPS: " + result.submitted_unique
-      + ". Nowe: " + result.added + ". Przypisano FBA: " + result.assigned
-      + ". Odrzucone fragmenty: " + result.rejected_count
-      + (result.rejected.length ? " — " + result.rejected.slice(0, 8).join(", ") : "");
-    status.classList.toggle("error", result.rejected_count > 0);
-    $("fba-rows").value = "";
-    await refresh();
-  } catch (error) { status.textContent = error.message; status.classList.add("error"); }
-  finally { button.disabled = false; }
-});
 
 void refresh();
 setInterval(() => void refresh(), 7000);

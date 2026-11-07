@@ -411,3 +411,64 @@ def test_browser_shift_checkbox_bulk_fba_branding_and_status_pills(application):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+
+def test_month_filter_sorting_and_persisted_ups_delivery_metadata(application):
+    import service
+    import base64
+
+    a, b = "1Z004R316836426182", "1Z004R316834147988"
+    service.add_numbers(a + " " + b)
+    photo = base64.b64encode(
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/VpAAAAAASUVORK5CYII=")
+    ).decode()
+    service.save_tracking_detail(a, {"status": "Doręczono", "ship_date": "2026-11-02",
+                                     "ship_date_source": "ups_pickup_date"})
+    service.save_tracking_metadata(a, {"trackResponse": {"shipment": [{"package": [{
+        "trackingNumber": a,
+        "weight": {"weight": "19.00", "unitOfMeasurement": "KGS"},
+        "deliveryTime": {"type": "DEL", "endTime": "090000"},
+        "deliveryDate": [{"type": "DEL", "date": "20261105"}],
+        "deliveryInformation": {"receivedBy": "DRIVER RELEASE",
+                                "deliveryPhoto": {"photoCaptureInd": "Y", "photo": photo}},
+    }]}]}})
+    service.save_tracking_detail(b, {"status": "W drodze", "ship_date": "2026-11-05",
+                                     "ship_date_source": "ups_pickup_date"})
+    service.save_tracking_metadata(b, {"trackResponse": {"shipment": [{"package": [{
+        "trackingNumber": b,
+        "weight": {"weight": "5.50", "unitOfMeasurement": "KGS"},
+        "deliveryTime": {"type": "EDW", "startTime": "101500", "endTime": "131500"},
+        "deliveryDate": [{"type": "SDD", "date": "20261109"}],
+    }]}]}})
+    nov = service.list_numbers(month="2026-11")
+    assert [x["tracking"] for x in nov["rows"]][:2] == [b, a]
+    assert len(service.list_numbers(month="2026-10")["rows"]) == 0
+    assert service.current_month() in service.available_months()
+    with pytest.raises(ValueError, match="Miesiąc"):
+        service.list_numbers(month="2026-13")
+    meta = {x["tracking"]: x for x in nov["rows"]}
+    assert meta[a]["weight_value"] == "19.00"
+    assert meta[a]["delivery_date"] == "20261105"
+    assert meta[a]["delivery_time_type"] == "DEL"
+    assert meta[a]["received_by"] == "DRIVER RELEASE"
+    assert meta[a]["photo_filename"].endswith(".png")
+    assert meta[b]["delivery_date_type"] == "SDD"
+    assert meta[b]["delivery_time_start"] == "101500"
+    assert not meta[b]["photo_filename"]
+    with application.test_client() as client:
+        assert client.get(f"/api/shipments/{a}/photo").status_code == 200
+        assert client.get(f"/api/shipments/{b}/photo").status_code == 404
+        assert len(client.get("/api/shipments?month=2026-11").json["rows"]) == 2
+
+
+def test_photo_flag_without_actual_image_does_not_fabricate_thumbnail(application):
+    import service
+    tracking = "1Z004R316836426182"
+    service.add_numbers(tracking)
+    service.save_tracking_metadata(tracking, {"trackResponse": {"shipment": [{"package": [{
+        "trackingNumber": tracking, "deliveryInformation": {
+            "deliveryPhoto": {"photoCaptureInd": "N",
+                              "isProximityMapViewable": False}}
+    }]}]}})
+    assert service.photo_path(tracking) is None
