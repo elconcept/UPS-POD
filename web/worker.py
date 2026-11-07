@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -137,6 +138,55 @@ def process_one(number: str, client: core.KlientUPS) -> str:
         return "retry"
 
 
+
+def rebuild_legacy_pods_once() -> int:
+    """Repair PDFs whose archived UPS HTML references unavailable GIFs; keep originals."""
+    marker = service.DATA_DIR / ".pod_branding_v2"
+    if marker.exists():
+        return 0
+    backup_dir = service.DATA_DIR / "pdf_originals_before_branding_fix"
+    with service.connection() as db:
+        rows = db.execute(
+            "SELECT tracking,pod_path,source_path FROM shipments "
+            "WHERE state='ready' AND source_type='html' AND source_path IS NOT NULL"
+        ).fetchall()
+    regenerated = 0
+    converter = core.KonwerterPDF()
+    try:
+        for row in rows:
+            target = Path(row["pod_path"] or "").resolve()
+            source = Path(row["source_path"] or "").resolve()
+            if not (target.is_relative_to(service.DOCUMENTS_DIR.resolve())
+                    and source.is_relative_to(service.SOURCES_DIR.resolve())
+                    and target.is_file() and source.is_file()):
+                continue
+            html = source.read_bytes()
+            if b"ups_logo.gif" not in html.lower() and b"ups_banner.gif" not in html.lower():
+                continue
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup = backup_dir / (row["tracking"] + ".pdf")
+            if not backup.is_file():
+                shutil.copy2(target, backup)
+            try:
+                core.zapisz_pod(html, "html", target, converter)
+                with service.connection() as db:
+                    db.execute("UPDATE shipments SET sha256=?,updated_at=? WHERE tracking=?",
+                               (hashlib.sha256(target.read_bytes()).hexdigest(),
+                                service.utcnow(), row["tracking"]))
+                service.sync_named_pdf(row["tracking"])
+                service.audit("worker", "pod_graphics_rebuilt", row["tracking"],
+                              description="Zachowano kopię oryginalnego PDF przed korektą.")
+                regenerated += 1
+            except Exception as exc:
+                service.audit("worker", "pod_graphics_rebuild_failed", row["tracking"],
+                              description=type(exc).__name__)
+                raise
+    finally:
+        converter.zamknij()
+    marker.write_text("POD branding v2; preserved archived originals.\n", encoding="utf-8")
+    return regenerated
+
+
 def run_once(client: core.KlientUPS | None = None) -> str | None:
     number = service.claim_next()
     if not number:
@@ -161,6 +211,11 @@ def main() -> None:
     service.init_db()
     # Only the dedicated worker recovers interrupted items, not the web process.
     recovered = service.recover_in_progress()
+    try:
+        fixed = rebuild_legacy_pods_once()
+        service.audit("worker", "pod_graphics_migration", description=f"Poprawiono PDF: {fixed}.")
+    except Exception:
+        logger.exception("Legacy POD graphics repair failed; original PDFs remain backed up.")
     service.audit("worker", "startup", description=f"Odzyskano zadań {recovered}.")
     logger.info("UPS POD worker started. Sequential processing, retry every %s hours.", RETRY_HOURS)
     client = None
