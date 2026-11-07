@@ -219,3 +219,37 @@ def test_pdf_ups_relative_graphics_are_resolved(application):
     assert "./ups_logo.gif" not in rendered
     assert "./ups_banner.gif" not in rendered
     assert "United Parcel Service" in rendered
+
+
+
+def test_fba_two_columns_use_ups_pickup_date_and_named_disk_copy(application):
+    import service
+    import ups_pod as core
+    number = "1Z004R316836426182"
+    entries = service.parse_fba_text(f"FBA15MSX7FKL\t{number}\n")
+    assert entries == [{"tracking": number, "shipment_id": "FBA15MSX7FKL", "ship_date": ""}]
+    assert service.assign_fba_rows(entries) == {"assigned": 1, "changed": 1}
+    payload = {"trackResponse": {"shipment": [{
+        "pickupDate": "20261102",
+        "package": [{"currentStatus": {"description": "Doręczono", "code": "011"},
+                     "activity": [{"date": "20261104", "status": {"type": "D",
+                                  "description": "Doręczono", "code": "FS"}}]}],
+    }]}}
+    detail = core.analizuj(200, payload, "")
+    assert detail["ship_date"] == "2026-11-02"
+    assert detail["ship_date_source"] == "ups_pickup_date"
+    assert detail["status"] == "Doręczono"
+    service.save_tracking_detail(number, detail)
+    with service.connection() as db:
+        row = db.execute("SELECT ship_date,ship_date_source,ups_status FROM shipments "
+                         "WHERE tracking=?", (number,)).fetchone()
+    assert tuple(row) == ("2026-11-02", "ups_pickup_date", "Doręczono")
+    target = service.DOCUMENTS_DIR / f"{number}.pdf"
+    target.write_bytes(b"%PDF-1.4\nmock binary bytes\n")
+    service.mark_ready(number, "Doręczono", "2026-11-04", str(target), "", "pdf", "hash")
+    assert service.export_filename(number) == f"2026-11-02-FBA15MSX7FKL-{number}.pdf"
+    named = service.EXPORTS_DIR / service.export_filename(number)
+    assert named.read_bytes() == target.read_bytes()
+    # Existing pickup date is left untouched by a two-column FBA reimport.
+    service.assign_fba_rows(entries)
+    assert named.is_file()
