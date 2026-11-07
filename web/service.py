@@ -11,9 +11,12 @@ from pathlib import Path
 
 DATA_DIR = Path(os.getenv("UPS_POD_HOME", "/data"))
 DB_PATH = DATA_DIR / "ups_pod.sqlite3"
-DOCUMENTS_DIR = DATA_DIR / "pod"
+DOCUMENTS_DIR = Path(os.getenv("UPS_POD_PDF_DIR", str(DATA_DIR / "pod")))
 SOURCES_DIR = DATA_DIR / "source"
-EXPORTS_DIR = DATA_DIR / "fba_pod"
+LEGACY_DOCUMENTS_DIR = DATA_DIR / "pod"
+LEGACY_EXPORTS_DIR = DATA_DIR / "fba_pod"
+UNASSIGNED_FBA = "FBA0000000"
+UNKNOWN_DATE = "BRAK_DATY"
 MAX_BATCH = 5000
 FBA_ID = re.compile(r"^FBA[A-Z0-9]{6,30}$")
 NUMBER = re.compile(r"^[A-Z0-9]{7,34}$")
@@ -35,7 +38,6 @@ def connection() -> sqlite3.Connection:
 def init_db() -> None:
     DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     SOURCES_DIR.mkdir(parents=True, exist_ok=True)
-    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     with connection() as db:
         db.execute(
             """CREATE TABLE IF NOT EXISTS shipments (
@@ -81,6 +83,15 @@ def init_db() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS ix_audit_level_id ON audit(level,id)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_due ON shipments(state, next_attempt_at)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_created ON shipments(created_at)")
+    # Moving legacy PDFs is idempotent and guarded by SQLite BEGIN IMMEDIATE.
+    # We retain old /data/pod copies as a rollback backup; active paths are only under /pod.
+    with connection() as db:
+        ready = [row[0] for row in db.execute("SELECT tracking FROM shipments WHERE state='ready'")]
+    for tracking in ready:
+        try:
+            sync_named_pdf(tracking)
+        except (OSError, ValueError) as exc:
+            audit("system", "pod_migration_error", tracking, description=type(exc).__name__)
 
 
 def recover_in_progress() -> int:
@@ -342,7 +353,7 @@ def assign_fba_rows(entries: list[dict], replace: bool = False) -> dict:
         tracking = str(entry.get("tracking", "")).strip().upper()
         fba = str(entry.get("shipment_id", "")).strip().upper()
         date = str(entry.get("ship_date") or "").strip()
-        if not NUMBER.fullmatch(tracking) or not FBA_ID.fullmatch(fba):
+        if not NUMBER.fullmatch(tracking) or not FBA_ID.fullmatch(fba) or fba == UNASSIGNED_FBA:
             raise ValueError("Niepoprawny numer UPS lub identyfikator przesyłki Amazon FBA.")
         if date:
             try:
@@ -397,46 +408,117 @@ def save_tracking_detail(tracking: str, detail: dict) -> None:
     sync_named_pdf(tracking)
 
 
+def policy_filename(tracking: str, shipment_id: str = "", ship_date: str = "") -> str:
+    """No fictitious dates: BRAK_DATY is a visible placeholder until UPS supplies a date."""
+    if not NUMBER.fullmatch(tracking):
+        raise ValueError("Nieprawidłowy numer UPS.")
+    date = ship_date or UNKNOWN_DATE
+    if ship_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise ValueError("Nieprawidłowa data nadania.")
+    shipment = shipment_id or UNASSIGNED_FBA
+    if not FBA_ID.fullmatch(shipment):
+        raise ValueError("Nieprawidłowy identyfikator FBA.")
+    return f"{date}-{shipment}-{tracking}.pdf"
+
+
 def export_filename(tracking: str) -> str:
     with connection() as db:
         row = db.execute("SELECT shipment_id,ship_date FROM shipments WHERE tracking=?",
                          (tracking,)).fetchone()
-    if not row or not row["shipment_id"] or not row["ship_date"]:
-        raise ValueError(f"Brak FBA Shipment ID albo daty nadania dla {tracking}.")
-    return f"{row['ship_date']}-{row['shipment_id']}-{tracking}.pdf"
+    if not row:
+        raise ValueError(f"Nieznany numer UPS {tracking}.")
+    return policy_filename(tracking, row["shipment_id"], row["ship_date"])
 
 
+def document_target(tracking: str) -> Path:
+    return DOCUMENTS_DIR / export_filename(tracking)
 
-def sync_named_pdf(tracking: str) -> Path | None:
-    """Maintain policy-named on-disk archive alongside untouched UPS source and tracking cache."""
-    with connection() as db:
-        row = db.execute(
-            "SELECT shipment_id,ship_date,pod_path,state FROM shipments WHERE tracking=?", (tracking,)
-        ).fetchone()
-    if not row or not row["shipment_id"] or not row["ship_date"] or row["state"] != "ready":
-        return None
-    filename = export_filename(tracking)
-    source = Path(row["pod_path"] or "").resolve()
-    if not source.is_relative_to(DOCUMENTS_DIR.resolve()) or not source.is_file():
-        return None
-    with source.open("rb") as stream:
-        signature = stream.read(4)
-    if signature != b"%PDF":
-        raise ValueError("Nieprawidłowy dokument PDF w archiwum.")
-    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    target = EXPORTS_DIR / filename
-    if target.exists() and target.stat().st_size == source.stat().st_size:
-        if hashlib.sha256(target.read_bytes()).digest() == hashlib.sha256(source.read_bytes()).digest():
-            return target
-    tmp = target.with_suffix(".pdf.tmp")
+
+def _digest(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _copy_verified(source: Path, target: Path) -> None:
+    """Migrate between filesystems without deleting source or overwriting differing files."""
+    tmp = target.with_name("." + target.name + ".migration.part")
     try:
-        shutil.copy2(source, tmp)
+        with source.open("rb") as src, tmp.open("xb") as dst:
+            shutil.copyfileobj(src, dst)
+            dst.flush()
+            os.fsync(dst.fileno())
+        if _digest(source) != _digest(tmp):
+            raise OSError("Kopia PDF różni się od oryginału.")
+        if target.exists():
+            if _digest(source) != _digest(target):
+                raise FileExistsError("Konflikt archiwum POD: nazwa jest już zajęta.")
+            return
         os.replace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
-    for old in EXPORTS_DIR.glob(f"*-{tracking}.pdf"):
-        if old != target:
-            old.unlink(missing_ok=True)
+
+
+def sync_named_pdf(tracking: str) -> Path | None:
+    """Physically rename the single active PDF when FBA/date change.
+
+    For legacy files copied from /data/pod or /data/fba_pod, originals remain as
+    backup. In the mounted archive there is exactly one active filename per UPS.
+    """
+    DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    root = DOCUMENTS_DIR.resolve()
+    with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT shipment_id,ship_date,pod_path,state FROM shipments WHERE tracking=?",
+            (tracking,),
+        ).fetchone()
+        if row is None or row["state"] != "ready":
+            return None
+        target = root / policy_filename(tracking, row["shipment_id"], row["ship_date"])
+        candidates = []
+        if row["pod_path"]:
+            candidates.append(Path(row["pod_path"]).resolve())
+        # Interrupted rename/migration: recover from the canonical target or
+        # a previous FBA/date filename; never read arbitrary paths from SQLite.
+        candidates.append(target)
+        candidates.extend(sorted(root.glob(f"*-{tracking}.pdf")))
+        candidates.append(LEGACY_DOCUMENTS_DIR.resolve() / f"{tracking}.pdf")
+        candidates.extend(sorted(LEGACY_EXPORTS_DIR.resolve().glob(f"*-{tracking}.pdf")))
+        trusted = [root, LEGACY_DOCUMENTS_DIR.resolve(), LEGACY_EXPORTS_DIR.resolve()]
+        source = next(
+            (p for p in candidates if any(p.is_relative_to(base) for base in trusted)
+             and p.is_file() and p.stat().st_size > 4),
+            None,
+        )
+        if source is None:
+            # No file: preserve database state for diagnosis rather than claiming success.
+            return None
+        with source.open("rb") as stream:
+            if stream.read(4) != b"%PDF":
+                raise ValueError("Archiwalny plik nie jest PDF.")
+        if source != target:
+            if source.is_relative_to(root):
+                if target.exists():
+                    if _digest(source) != _digest(target):
+                        raise FileExistsError("Konflikt różnych PDF dla tej samej nazwy.")
+                    source.unlink()
+                else:
+                    os.replace(source, target)
+            else:
+                _copy_verified(source, target)
+        if not target.is_file():
+            raise OSError("Nie udało się przenieść PDF do archiwum.")
+        db.execute(
+            "UPDATE shipments SET pod_path=?,sha256=?,updated_at=? WHERE tracking=?",
+            (str(target), _digest(target), utcnow(), tracking),
+        )
+        # No duplicate active PDF filenames remain after a successful rename.
+        for stale in root.glob(f"*-{tracking}.pdf"):
+            if stale != target and _digest(stale) == _digest(target):
+                stale.unlink()
     return target
 
 
