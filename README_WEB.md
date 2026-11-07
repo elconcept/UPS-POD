@@ -1,4 +1,4 @@
-# UPS POD Web — automatyczne archiwum potwierdzeń doręczenia (WDT)
+# ElectroSmart UPS-POD — automatyczne archiwum potwierdzeń doręczenia
 
 **Adres:** https://ups.xlap.pl (Cloudflare Tunnel `ds1821`, aplikacja Access z polityką `laptopshop.pl`).
 
@@ -102,4 +102,10 @@ również przy równoczesnych importach.
 
 Usługa Docker Compose składa się teraz z jednego kontenera (dwa nadzorowane procesy: Gunicorn + worker). Proces nadzorczy propaguje SIGTERM, a gdy któryś proces się zakończy, kontener uruchamia się ponownie zgodnie z polityką Docker. `healthz` sprawdza także możliwość zapisu w montowanym katalogu PDF. Worker używa `locale=pl_PL` we wszystkich zapytaniach Tracking API.
 
-Wolumen NAS `/volume1/dokumentacja/UPS/POD:/pod` musi istnieć; Compose nie może go tworzyć po cichu. Katalog ma pozostawionego dotychczasowego właściciela i grupę 10001 z prawem zapisu dla procesu kontenera (UID:GID 10001:10001). Przy migracji poprzednich dokumentów zachowywane są źródłowe kopie w `data/pod` i weryfikowana integralność SHA-256 po kopiowaniu. **Jedynym aktywnym archiwum** pozostaje `/pod`. Po podaniu FBA zmieniana jest nazwa istniejącego PDF, a nie kopiowany drugi dokument.
+Wolumen NAS `/volume1/dokumentacja/UPS/POD:/pod` musi istnieć; Compose nie może go tworzyć po cichu. Utworzono na Synology wyłączone do logowania konto serwisowe `upspodsvc` o UID 1031, grupa systemowa `users` GID 100; kontener działa jako `1031:100`, a właściciel katalogu POD i plików SQLite jest z tym zgodny. Przy migracji poprzednich dokumentów zachowywane są źródłowe kopie w `data/pod` i weryfikowana integralność SHA-256 po kopiowaniu. **Jedynym aktywnym archiwum** pozostaje `/pod`. Po podaniu FBA zmieniana jest nazwa istniejącego PDF, a nie kopiowany drugi dokument.
+
+## Import mieszany i automatyczne przypisywanie FBA
+
+Dwa pola importowe obsługują uporządkowany strumień dowolnych tokenów: `FBA1234567`, tracking `1Z` + 16 znaków, dowolne separatory i wielokrotne trackingi w jednej komórce. Każdy FBA jest przypisany do kolejnych trackingów aż do następnego FBA. Obsługiwane są także istniejące w bazie identyfikatory 12-znakowe (np. `FBA15MSX7FKL`). Śmieci wejściowe są ignorowane, ale raportowane inline. Ponowny import istniejącego UPS bez FBA uzupełnia jego przypisanie. Sprzeczne przypisania są blokowane transakcyjnie. Dla niewysłanych jeszcze przesyłek status `W drodze` to oczekiwanie, nie błąd POD. Każda próba ma przypisany numer UPS w audycie; starsze wpisy `retry` bez logu otrzymują jeden odtworzony wpis przy migracji SQLite. UPS `pickupDate` ma pierwszeństwo nad ręcznymi datami.
+
+Status przesyłki jest kolorową etykietą. W tabeli nie ma kolumn prób i ostatniego sprawdzenia; metadane są dostępne w kolumnie `Dokument` przy braku POD. Shift-kliknięcie checkboxa zaznacza zakres do najbliższego wybranego wiersza powyżej; zaznaczonym numerom można nadać zbiorowo FBA.
