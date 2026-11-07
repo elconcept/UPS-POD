@@ -61,7 +61,7 @@ python -m playwright install --with-deps chromium
 python -m pytest -q tests_web -v
 ```
 
-`tests_web/test_e2e.py` sprawdza cały przepływ: HTTP i CSRF, parser separatorów, idempotentność, trwałość SQLite, OAuth na symulatorze UPS, POD PDF/HTML, konwersję Chromium, doręczone bez POD, niedoręczone, 404, ponowienia, pobieranie PDF i ZIP. Testy nie używają rzeczywistych poświadczeń. Workflow: `.github/workflows/web-ci.yml`.
+`tests_web/test_e2e.py` sprawdza rzeczywiste API UPS, przeglądarkę, świeży POD, PDF i ZIP, aktualizacje AJAX, import trzech wierszy Excela, równoczesną deduplikację, trwałość i paginację audytu, CSRF oraz ponowienia kolejki. Wymaga prawdziwych poświadczeń UPS i numeru doręczonej przesyłki. Workflow: `.github/workflows/web-ci.yml`.
 
 **Test produkcyjny:** token OAuth UPS sprawdzony z rzeczywistym `.env`; faktycznego POD nie pobierano bez wskazanego numeru doręczonej przesyłki.
 

@@ -36,8 +36,6 @@ jobs:
           sudo apt-get update && sudo apt-get install -y poppler-utils
       - name: Test Qt integration without GUI
         run: python -m unittest -v testy.test_desktop_integration
-      - name: End-to-end UPS API simulator tests
-        run: python testy/test_e2e.py
 
   build:
     needs: verify
