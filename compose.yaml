@@ -67,3 +67,6 @@ networks:
     external: true
   ups_outbound:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.16.12.32/28
