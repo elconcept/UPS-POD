@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import re
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -11,6 +12,7 @@ DATA_DIR = Path(os.getenv("UPS_POD_HOME", "/data"))
 DB_PATH = DATA_DIR / "ups_pod.sqlite3"
 DOCUMENTS_DIR = DATA_DIR / "pod"
 SOURCES_DIR = DATA_DIR / "source"
+EXPORTS_DIR = DATA_DIR / "fba_pod"
 MAX_BATCH = 5000
 FBA_ID = re.compile(r"^FBA[A-Z0-9]{6,30}$")
 NUMBER = re.compile(r"^[A-Z0-9]{7,34}$")
@@ -32,6 +34,7 @@ def connection() -> sqlite3.Connection:
 def init_db() -> None:
     DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     with connection() as db:
         db.execute(
             """CREATE TABLE IF NOT EXISTS shipments (
@@ -189,6 +192,7 @@ def mark_ready(number: str, description: str, delivered_at: str, pod_path: str,
             (description[:500], delivered_at, pod_path, source_path, source_type,
              sha256, now, number),
         )
+    sync_named_pdf(number)
 
 
 def mark_retry(number: str, error: str, description: str = "", delay_hours: float = 3) -> None:
@@ -267,7 +271,7 @@ def safe_description(value: str) -> str:
 def audit_level(operation: str, http_status: int | None = None) -> str:
     if operation in {"ups_network_error", "credentials_missing"} or (http_status or 0) >= 500:
         return "ERROR"
-    if operation in {"retry_scheduled", "retry"} or 400 <= (http_status or 0) < 500:
+    if operation in {"retry_scheduled", "retry", "metadata_backfill_failed"} or 400 <= (http_status or 0) < 500:
         return "WARNING"
     if operation == "ready":
         return "SUCCESS"
@@ -360,6 +364,8 @@ def assign_fba_rows(entries: list[dict], replace: bool = False) -> dict:
                 changed += 1
             db.execute("UPDATE shipments SET shipment_id=?,ship_date=?,ship_date_source='manual',"
                        "updated_at=? WHERE tracking=?", (fba, date, now, tracking))
+    for number in checked:
+        sync_named_pdf(number)
     audit("user", "fba_mapping", description=f"Przypisano {len(checked)} numerów; zmieniono {changed}.")
     return {"assigned": len(checked), "changed": changed}
 
@@ -387,6 +393,34 @@ def export_filename(tracking: str) -> str:
     if not row or not row["shipment_id"] or not row["ship_date"]:
         raise ValueError(f"Brak FBA Shipment ID albo daty nadania dla {tracking}.")
     return f"{row['ship_date']}-{row['shipment_id']}-{tracking}.pdf"
+
+
+
+def sync_named_pdf(tracking: str) -> Path | None:
+    """Maintain policy-named on-disk archive alongside untouched UPS source and tracking cache."""
+    with connection() as db:
+        row = db.execute(
+            "SELECT shipment_id,ship_date,pod_path,state FROM shipments WHERE tracking=?", (tracking,)
+        ).fetchone()
+    if not row or not row["shipment_id"] or not row["ship_date"] or row["state"] != "ready":
+        return None
+    filename = export_filename(tracking)
+    source = Path(row["pod_path"] or "").resolve()
+    if not source.is_relative_to(DOCUMENTS_DIR.resolve()) or not source.is_file():
+        return None
+    if source.open("rb").read(4) != b"%PDF":
+        raise ValueError("Nieprawidłowy dokument PDF w archiwum.")
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    target = EXPORTS_DIR / filename
+    if target.exists() and target.stat().st_size == source.stat().st_size:
+        return target
+    tmp = target.with_suffix(".pdf.tmp")
+    try:
+        shutil.copy2(source, tmp)
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return target
 
 
 def save_tracking_fields(payload: dict) -> None:
