@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "UPS_POD/**"
+      - "testy/**"
+      - "build/**"
+      - "UPSPOD.spec"
+      - "requirements-desktop.txt"
+      - ".github/workflows/build-desktop.yml"
   workflow_dispatch:
 
 # Only the release job can write to the repository.
