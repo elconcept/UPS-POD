@@ -10,6 +10,7 @@ from pathlib import Path
 
 import service
 import config_store
+import notifications
 import ups_pod as core
 
 logger = logging.getLogger("ups_pod.worker")
@@ -253,6 +254,12 @@ def main() -> None:
         service.audit("worker", "pod_graphics_migration", description=f"Poprawiono PDF: {fixed}.")
     except Exception:
         logger.exception("Legacy POD graphics repair failed; original PDFs remain backed up.")
+    try:
+        refreshed = service.reindex_archived_tracking_columns()
+        service.audit("worker", "ups_extra_reindex",
+                      description=f"Uzupełniono pola archiwalne dla {refreshed} przesyłek.")
+    except Exception:
+        logger.exception("UPS extras reindex failed; original JSON remains intact")
     service.audit("worker", "startup", description=f"Odzyskano zadań {recovered}.")
     logger.info("UPS POD worker started. Sequential processing, retry every %s hours.", RETRY_HOURS)
     client = None
@@ -261,8 +268,15 @@ def main() -> None:
     service.audit("worker", "metadata_backfill_queued",
                   description=f"Do uzupełnienia: {inserted} odpowiedzi Tracking API.")
     last_backfill_at = 0.0
+    last_notifications_at = 0.0
     while True:
         try:
+            if time.monotonic() - last_notifications_at >= 300:
+                last_notifications_at = time.monotonic()
+                try:
+                    notifications.tick()
+                except Exception:
+                    logger.exception("Worker notification pass failed")
             cid, secret = credentials()
             if (cid, secret) != active_credentials:
                 client = None

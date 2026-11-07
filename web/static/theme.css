@@ -625,3 +625,110 @@ button.stat-action{transition:background-color .1s}
   .actions .action-secondary .action-group{flex:0 1 auto!important}
   .actions .action-icon{width:15px}
 }
+
+/* V8: fixed selection rail prevents FBA values from painting over checkboxes. */
+#shipments-table col.selection-col{width:44px!important}
+#shipments-table td.selection-cell,
+#shipments-table th.selection-header,
+#shipments-table th.selection-filter{
+  position:sticky!important;left:0!important;z-index:7!important;
+  width:44px!important;min-width:44px!important;max-width:44px!important;
+  padding:5px 8px!important;box-sizing:border-box!important;
+  background:var(--ui-surface)!important;border-right:1px solid var(--ui-border)!important;
+  overflow:hidden!important;isolation:isolate
+}
+#shipments-table th.selection-header,
+#shipments-table th.selection-filter{
+  z-index:9!important;background:var(--ui-thead)!important
+}
+#shipments-table tbody tr:hover td.selection-cell{
+  background:var(--ui-row)!important
+}
+#shipments-table .fba-cell{overflow:hidden!important;max-width:100%!important;
+  white-space:nowrap!important;padding:5px 6px!important;isolation:isolate}
+#shipments-table .fba-cell .fba-edit-link{
+  width:100%;max-width:100%;display:block;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;text-align:left;
+  margin:0!important;padding:0 2px!important;box-sizing:border-box
+}
+.brand-home,.brand-home:visited{color:inherit!important;text-decoration:none!important;
+  border-radius:4px}
+.brand-home span{color:var(--ui-accent)!important}
+.brand-home:focus-visible{outline:2px solid var(--ui-focus);outline-offset:4px}
+.brand-home:hover{text-decoration:underline!important;text-decoration-color:var(--ui-accent)!important}
+.support-send.support-mail-icon{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:34px;min-width:34px;height:29px!important;padding:4px!important;
+  border:1px solid var(--ui-accent)!important;border-radius:7px!important;
+  background:var(--ui-select)!important;color:var(--ui-accent-strong)!important;
+  cursor:pointer
+}
+.support-send.support-mail-icon svg{width:19px;height:19px}
+.support-send.support-mail-icon:hover:not(:disabled){
+  background:var(--ui-hover)!important;box-shadow:0 0 0 2px var(--ui-focus)}
+.employee-config-form{border-top:1px solid var(--ui-border);padding-top:13px;
+  margin-top:15px;display:flex;flex-direction:column;gap:6px}
+.employee-config-form h4{font-size:13px;margin:0 0 4px;color:var(--ui-text)}
+.employee-config-form input{min-height:33px}
+.employee-config-form button{align-self:flex-start;margin-top:5px}
+.gmail-advanced[hidden]{display:none!important}
+
+/* Align upper pagination beside document buttons, never in a detached row. */
+.actions{display:grid!important;grid-template-areas:"main main" "tools pager";
+  grid-template-columns:minmax(0,1fr) auto!important;
+  column-gap:8px!important;row-gap:6px!important;align-items:center!important}
+.actions .action-main{grid-area:main;min-width:0}
+.actions .action-secondary{grid-area:tools;min-width:0;width:auto;
+  justify-content:flex-start;flex-wrap:nowrap}
+.actions .pagination-top{grid-area:pager;min-width:0;white-space:nowrap;
+  margin:0!important;border:0!important;padding:0!important;
+  align-items:center;gap:6px}
+.actions .pagination-top .page-controls{gap:4px}
+.actions .pagination-top #page-info-top{font-size:10px;color:var(--ui-muted)}
+.actions .pagination-top label{display:none}
+.actions .pagination-top button{font-size:10px;padding:5px 6px;min-height:28px}
+.actions .pagination-top select{font-size:10px;padding:5px 3px;min-height:28px}
+@media(min-width:1660px){
+ .actions{grid-template-areas:"main tools pager";
+  grid-template-columns:minmax(235px,1fr) minmax(0,auto) auto!important}
+ .actions .action-main #query{min-width:60px}
+ .actions .action-group button{font-size:10px;padding:5px 5px}
+}
+@media(min-width:1000px) and (max-width:1659px){
+ .actions{grid-template-columns:minmax(0,1fr) auto!important}
+ .actions .action-secondary{justify-content:flex-start}
+}
+@media(max-width:999px){
+ .actions{grid-template-areas:"main" "tools" "pager";
+  grid-template-columns:minmax(0,1fr)!important}
+ .actions .pagination-top{justify-content:flex-end;width:100%}
+}
+@media(max-width:580px){
+ .actions .action-main{display:flex;min-width:0}
+ .actions .pagination-top{gap:4px}
+ .actions .pagination-top #page-info-top{flex:1 1 auto;overflow:hidden;
+  white-space:nowrap;text-overflow:ellipsis}
+ .actions .pagination-top .page-controls{flex:0 0 auto}
+}
+
+/* Mobile filters use a separate search row; avoid overlap between
+   'Bez POD' and the month selector, without wrapping the action toolbar. */
+@media(max-width:650px){
+  .actions .action-main{
+    display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;
+    grid-template-areas:"scope month" "search search"!important;
+    gap:5px!important;width:100%
+  }
+  .actions .action-main .filters{grid-area:scope!important;display:flex!important;
+    min-width:0!important;width:100%;justify-content:stretch}
+  .actions .action-main .filters button{flex:1 1 0;min-width:0;
+    padding:6px 3px!important;font-size:10px!important}
+  .actions .action-main .month-control{grid-area:month!important;
+    display:flex!important;align-items:center;min-width:0;width:100%;
+    justify-content:stretch}
+  .actions .action-main #month-filter{flex:1 1 auto!important;min-width:0!important;
+    width:100%!important;max-width:none!important}
+  .actions .action-main .month-label{font-size:10px}
+  .actions .action-main #query{grid-area:search!important;width:100%!important;
+    min-width:0!important;max-width:none!important;box-sizing:border-box}
+}

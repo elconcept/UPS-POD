@@ -23,6 +23,8 @@ KEYS = {
     "GMAIL_SMTP_APP_PASSWORD": "Gmail app password",
     "GOOGLE_OAUTH_CLIENT_ID": "Google OAuth Client ID",
     "GOOGLE_OAUTH_CLIENT_SECRET": "Google OAuth Client Secret",
+    "SUPPORT_STAFF_NAME": "Imię i nazwisko pracownika",
+    "SUPPORT_NOTIFY_EMAIL": "E-mail do powiadomień",
 }
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9._~!+:/=@%-]{1,512}$")
@@ -91,7 +93,11 @@ def update(values: dict[str, str]) -> list[str]:
             raise ValueError("Nieprawidłowy klucz lub wartość konfiguracji.")
         if not value:
             continue  # blank form input means keep old secret
-        if not SAFE_VALUE.fullmatch(value) or "\r" in value or "\n" in value:
+        if key == "SUPPORT_STAFF_NAME":
+            if (not 2 <= len(value) <= 100
+                    or not all(ch.isalpha() or ch in " -'." for ch in value)):
+                raise ValueError("Imię i nazwisko zawierają niedozwolone znaki.")
+        elif not SAFE_VALUE.fullmatch(value) or "\r" in value or "\n" in value:
             raise ValueError("Wartość zawiera niedozwolone znaki.")
         updates[key] = value
     if not updates:

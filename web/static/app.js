@@ -50,6 +50,37 @@ const EXTRA_COLUMNS = [
   ["ups.delivery_start", "Początek przedziału doręczenia", "package.deliveryTime.startTime"],
   ["ups.delivery_end", "Koniec przedziału doręczenia", "package.deliveryTime.endTime"],
   ["ups.weight_unit", "Jednostka masy paczki", "package.weight.unitOfMeasurement"],
+  ["ups.weight_value", "Masa według UPS", "package.weight.weight"],
+  ["ups.service_code", "Kod usługi przesyłki", "shipment.service.code"],
+  ["ups.package_service_code", "Kod usługi paczki", "package.service.code"],
+  ["ups.package_service_desc", "Nazwa usługi paczki", "package.service.description"],
+  ["ups.service_level", "Poziom usługi", "package.service.levelCode"],
+  ["ups.shipment_type", "Typ przesyłki", "shipment.shipmentType"],
+  ["ups.length", "Długość paczki", "package.dimension.length"],
+  ["ups.width", "Szerokość paczki", "package.dimension.width"],
+  ["ups.height", "Wysokość paczki", "package.dimension.height"],
+  ["ups.dimension_unit", "Jednostka wymiarów", "package.dimension.unitOfDimension"],
+  ["ups.activity_gmt_date", "Data ostatniego skanu UTC", "package.activity[0].gmtDate"],
+  ["ups.activity_gmt_time", "Godzina ostatniego skanu UTC", "package.activity[0].gmtTime"],
+  ["ups.activity_gmt_offset", "Przesunięcie strefy skanu", "package.activity[0].gmtOffset"],
+  ["ups.activity_country", "Kraj ostatniego skanu", "package.activity[0].destCountryCode"],
+  ["ups.activity_location", "Kod placówki skanu", "package.activity[0].location.code"],
+  ["ups.activity_slic", "Kod sortowni skanu", "package.activity[0].location.slic"],
+  ["ups.activity_logical", "Rodzaj skanu systemowego", "package.activity[0].logicalScan"],
+  ["ups.exception_reason", "Kod przyczyny wyjątku", "package.activity[0].xpldDetails.exceptionReasonCode"],
+  ["ups.exception_resolution", "Kod rozstrzygnięcia wyjątku", "package.activity[0].xpldDetails.exceptionResolutionCode"],
+  ["ups.exception_status", "Kod statusu wyjątku", "package.activity[0].xpldDetails.exceptionStatusCode"],
+  ["ups.healthcare", "Paczka medyczna", "package.isHealthCarePackage"],
+  ["ups.smart_package", "Paczka Smart Package", "package.isSmartPackage"],
+  ["ups.insurance", "Ochrona Insurance Shield", "package.isInsureShieldProtected"],
+  ["ups.current_description", "Pełny opis bieżącego statusu", "package.currentStatus.description"],
+  ["ups.delivery_date_value", "Data terminu doręczenia UPS", "package.deliveryDate[0].date"],
+  ["ups.package_count_detail", "Liczba elementów paczki", "package.packageCount"],
+  ["ups.activity_dest_slic", "Sortownia docelowa ostatniego skanu", "package.activity[0].destSLIC"],
+  ["ups.ulo_number", "Identyfikator placówki skanu", "package.activity[0].uloNumber"],
+  ["ups.ulo_type", "Typ placówki skanu", "package.activity[0].uloTypeCode"],
+  ["ups.tax_indicator", "Oznaczenie podatkowe paczki", "package.taxIndicator"],
+  ["ups.return_eligible", "Możliwość zwrotu UPS", "package.preAuthorizedReturnInfo.returnEligibilityIndicator"],
 ];
 const COLUMN_KEYS = [...BASE_COLUMNS, ...EXTRA_COLUMNS.map(([key]) => key)];
 const columnLabels = {
@@ -156,6 +187,62 @@ function applyColumnWidths() {
   table.classList.toggle("table-ultra-dense", keys.length >= 18
     || (wrapper.clientWidth < 600 && keys.length >= 10));
 }
+// Refit after a visibility change: measure header plus representative *actual*
+// values first, then distribute surplus or compress proportionally. The table
+// always occupies 100%, even with all API fields enabled.
+function autoFitColumnWidths() {
+  const keys = columnOrder.filter((key) => visibleColumns.has(key));
+  const wrapper = $("shipments-table").closest(".table-wrap");
+  const available = Math.max(1, wrapper.clientWidth - SELECT_COLUMN_WIDTH - API_COLUMN_WIDTH);
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.font = getComputedStyle($("rows")).font || "12px system-ui";
+  const rowNodes = [...$("rows").querySelectorAll("tr[data-tracking]")];
+  // Run only on user-triggered column visibility changes. Inspect every
+  // currently loaded record, rather than sampling, to capture the longest values.
+  const measured = {};
+  const preferred = {};
+  for (const key of keys) {
+    const header = $("shipments-table").tHead.rows[0].querySelector('[data-col="' + key + '"]');
+    const base = key === "pod_preview" ? 75 : key === "document" ? 100
+      : key === "ship_date" || key === "delivery_date" ? 102
+      : key === "fba" ? 143 : key === "tracking" ? 167 : 62;
+    let width = Math.max(base, context.measureText(columnLabels[key]).width + 38);
+    for (let i = 0; i < rowNodes.length; i++) {
+      const cell = rowNodes[i].querySelector('[data-col="' + key + '"]');
+      if (!cell) continue;
+      const text = (cell.textContent || "").trim();
+      const textWidth = context.measureText(text.slice(0, 500)).width + 24;
+      width = Math.max(width, Math.min(textWidth, 620));
+    }
+    if (header && getComputedStyle(header).font) {
+      context.font = getComputedStyle(header).font;
+      width = Math.max(width, context.measureText(columnLabels[key]).width + 40);
+      context.font = getComputedStyle($("rows")).font || "12px system-ui";
+    }
+    measured[key] = Math.max(45, Math.min(620, Math.round(width)));
+  }
+  const naturalTotal = keys.reduce((sum, key) => sum + measured[key], 0);
+  // We use relative weights because applyColumnWidths normalizes the total.
+  const free = available - naturalTotal;
+  for (const key of keys) {
+    if (free >= 0) {
+      // Allocate surplus mostly to descriptive fields, not icons or dates.
+      const flexible = keys.filter((field) => !["pod_preview", "document"].includes(field));
+      const weight = flexible.includes(key) ? (key === "fba" || key === "tracking" ? 1.6 : 1) : 0.15;
+      const share = free * weight / Math.max(1, flexible.length + 2.3);
+      preferred[key] = Math.round(measured[key] + share);
+    } else {
+      // Critical identifiers survive longer; optional API fields compress first.
+      const priority = key === "tracking" || key === "fba" ? 1.8 : 1;
+      const factor = available / Math.max(1, naturalTotal);
+      preferred[key] = Math.max(25, Math.round(measured[key] * Math.pow(factor, 1/priority)));
+    }
+  }
+  columnWidths = {...columnWidths, ...preferred};
+  saveColumnPrefs();
+}
 function applyColumnVisibility() {
   const table = $("shipments-table");
   for (const cell of table.querySelectorAll("[data-col]")) {
@@ -239,8 +326,8 @@ function buildColumnPicker() {
         if (input.checked) visibleColumns.add(key);
         else if (visibleColumns.size > 1) visibleColumns.delete(key);
         else { input.checked = true; return; }
-        saveColumnPrefs();
         applyColumnVisibility();
+        autoFitColumnWidths();
         applyColumnWidths();
       });
       label.append(input, span);
@@ -523,6 +610,8 @@ function makeQueueIcon(kind) {
     exception: [["path", "M10.3 3.4a2 2 0 0 1 3.4 0l8.1 14.3a2 2 0 0 1-1.7 3H3.9a2 2 0 0 1-1.7-3z"],
                 ["path", "M12 9v5"], ["path", "M12 18h.01"]],
     error: [["circle", {cx:12, cy:12, r:9}], ["path", "M9 9l6 6M15 9l-6 6"]],
+    mail: [["rect", {x:2, y:5, width:20, height:14, rx:2}],
+           ["path", "m3 7 9 7 9-7"]],
     "document-waiting": [
       ["path", "M13 2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8"],
       ["path", "M13 2v5h5"],
@@ -739,26 +828,28 @@ function renderRows() {
       link.title = "Pobierz PDF — podgląd znajdziesz w kolumnie Podgląd POD";
       link.dataset.tracking = row.tracking;
       doc.append(link);
-    } else if (isPastDeliveryDate(row) && row.support_status === "sent") {
+    } else if (row.support_eligible && row.support_status === "sent") {
       const sent = document.createElement("span");
       sent.className = "status ready support-sent";
       sent.textContent = "E-mail wysłany";
       sent.title = "Serwer SMTP przyjął wiadomość. UPS nie potwierdził jeszcze jej odbioru.";
       doc.append(sent);
-    } else if (isPastDeliveryDate(row) && ["pending", "uncertain"].includes(row.support_status)) {
+    } else if (row.support_eligible && ["pending", "uncertain"].includes(row.support_status)) {
       const pending = document.createElement("span");
       pending.className = "status waiting support-sent";
       pending.textContent = "Weryfikuj";
       pending.title = "Nie ponawiaj automatycznie — zweryfikuj, czy poprzednia wiadomość dotarła";
       doc.append(pending);
-    } else if (isPastDeliveryDate(row)) {
+    } else if (row.support_eligible) {
       const support = document.createElement("button");
       support.type = "button";
-      support.className = "status document-bubble support-send";
-      support.textContent = "Zgłoś UPS";
+      support.className = "status document-bubble support-send support-mail-icon";
+      support.append(makeQueueIcon("mail"));
+      support.setAttribute("aria-label", "Wyślij do UPS prośbę o weryfikację "
+        + "i ewentualną korektę doręczenia dla " + row.tracking);
       support.title = supportConfigured
-        ? "Wyślij do oficjalnej obsługi UPS zapytanie o brak skanu doręczenia"
-        : "Wysyłka wymaga skonfigurowanego serwera SMTP na Synology";
+        ? "Wyślij prośbę do UPS o weryfikację doręczenia i aktualizację trackingu"
+        : "Skonfiguruj Gmail w ustawieniach, aby wysłać zgłoszenie";
       support.dataset.tracking = row.tracking;
       support.addEventListener("click", () => void sendUpsSupport(row, support));
       doc.append(support);
@@ -905,7 +996,7 @@ function syncSelected() {
   $("download-selected").title = available
     ? "Pobierz " + available + " gotowych POD w ZIP (z " + count + " wybranych)."
     : "Zaznacz przesyłki z gotowym dokumentem PDF, aby pobrać ZIP.";
-  $("retry-selected").querySelector(".button-label").textContent = "PONÓW API";
+  $("retry-selected").querySelector(".button-label").textContent = "UPS API";
   $("retry-selected").title = "Ponów sprawdzenie API dla " + count + " wybranych przesyłek.";
   $("export-selected").querySelector(".button-label").textContent = "XLSX";
   $("export-selected").title = "Utwórz zestawienie XLSX dla " + count + " wybranych przesyłek.";
@@ -1383,7 +1474,7 @@ document.querySelectorAll("[data-close-dialog]").forEach((button) =>
 
 async function sendUpsSupport(row, button) {
   button.disabled = true;
-  button.textContent = "Wysyłanie…";
+  button.textContent = "…";
   try {
     const result = await requestJson("/api/support/" + encodeURIComponent(row.tracking) + "/send", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1394,7 +1485,7 @@ async function sendUpsSupport(row, button) {
     await refresh();
   } catch (error) {
     button.disabled = false;
-    button.textContent = "Zgłoś UPS";
+    button.replaceChildren(makeQueueIcon("mail"));
     tableNotice(row.tracking + ": " + error.message, true);
   }
 }
@@ -1547,12 +1638,18 @@ async function refreshConfiguration() {
     const google = config.gmail;
     const gmailApp = config.gmail_app || {};
     $("gmail-app-email").placeholder = gmailApp.email || "np. office@electrosmart.pl";
-    $("gmail-app-note").textContent = gmailApp.configured
-      ? "Zapisany nadawca: " + gmailApp.email + ". Dla pewności kliknij «Sprawdź logowanie»."
-      : "Nie skonfigurowano prostego połączenia Gmail.";
+    $("employee-full-name").value = config.employee?.name || "";
+    $("employee-email").value = config.employee?.email || "";
+    $("gmail-app-note").textContent = gmailApp.verified
+      ? "Połączenie Gmail SMTP zweryfikowane: " + gmailApp.email
+        + ". Powiadomienia będą wysyłane po podaniu e-maila pracownika."
+      : gmailApp.configured
+      ? "Dane Gmail zapisane. Kliknij «Sprawdź logowanie», aby autoryzować powiadomienia."
+      : "Skonfiguruj Gmail: adres nadawcy i hasło aplikacji, bez Google Cloud.";
     $("gmail-app-check").disabled = !gmailApp.configured;
-    $("gmail-config-indicator").textContent = gmailApp.configured
-      ? "Dane Gmail zapisane" : google.configured ? "OAuth połączony"
+    $("gmail-config-indicator").textContent = gmailApp.verified
+      ? "Gmail zweryfikowany" : gmailApp.configured
+      ? "Oczekuje na test logowania" : google.configured ? "OAuth połączony"
       : "Brak konfiguracji";
     $("gmail-config-indicator").classList.toggle("configured", gmailApp.configured || google.configured);
     $("gmail-connected-info").hidden = !google.configured;
@@ -1586,6 +1683,20 @@ $("ups-config-form").addEventListener("submit", async (event) => {
     configNotice(error.message, true);
   } finally { button.disabled = false; }
 });
+$("employee-config-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const save = event.currentTarget.querySelector('[type="submit"]');
+  save.disabled = true;
+  try {
+    const result = await requestJson("/api/config/employee", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: $("employee-full-name").value.trim(),
+                            email: $("employee-email").value.trim()})
+    });
+    configNotice("Dane pracownika zapisano: " + (result.employee.email || "brak adresu") + ".");
+  } catch (error) { configNotice(error.message, true); }
+  finally { save.disabled = false; }
+});
 $("gmail-app-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.currentTarget.querySelector('[type="submit"]');
@@ -1612,7 +1723,7 @@ $("gmail-app-check").addEventListener("click", async () => {
   try {
     const result = await requestJson("/api/config/gmail-app/check", {method:"POST"});
     configNotice("Gmail potwierdził logowanie konta " + result.email
-      + ". Wiadomości będą wysyłane wyłącznie przyciskiem zgłoszenia UPS.");
+      + ". Zgłoszenia do UPS są wysyłane ręcznie, powiadomienia do pracownika automatycznie.");
     $("gmail-app-note").textContent = "Połączenie SMTP zweryfikowane.";
   } catch (error) {
     configNotice("Nie udało się sprawdzić Gmail: " + error.message, true);

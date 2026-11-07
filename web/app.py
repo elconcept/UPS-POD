@@ -106,7 +106,9 @@ def create_app(testing: bool = False) -> Flask:
     def config_status():
         return jsonify(**config_store.masked_status(), gmail=gmail_oauth.status(),
                        gmail_app=support_mail.gmail_app_status(),
-                       api_archive=service.tracking_payload_info())
+                       api_archive=service.tracking_payload_info(),
+                       employee={"name": config_store.get("SUPPORT_STAFF_NAME"),
+                                 "email": config_store.get("SUPPORT_NOTIFY_EMAIL")})
 
     @web.post("/api/config/ups")
     def config_ups():
@@ -123,6 +125,29 @@ def create_app(testing: bool = False) -> Flask:
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
         return jsonify(saved=True, changed=changed, **config_store.masked_status())
+
+    @web.post("/api/config/employee")
+    def config_employee():
+        data = request.get_json(silent=True) or {}
+        name = data.get("name", "")
+        email = str(data.get("email", "")).strip().lower()
+        if not isinstance(name, str):
+            abort(400, "Nieprawidłowe imię i nazwisko.")
+        if email and not support_mail.MAIL_RE.fullmatch(email):
+            abort(400, "Nieprawidłowy adres pracownika.")
+        try:
+            changed = config_store.update({
+                "SUPPORT_STAFF_NAME": name.strip(),
+                "SUPPORT_NOTIFY_EMAIL": email,
+            })
+        except ValueError as exc:
+            abort(400, str(exc))
+        if changed:
+            service.audit("user", "staff_config_updated",
+                          description="Zmieniono dane pracownika: " + ", ".join(changed))
+        return jsonify(saved=True, changed=changed,
+                       employee={"name": config_store.get("SUPPORT_STAFF_NAME"),
+                                 "email": config_store.get("SUPPORT_NOTIFY_EMAIL")})
 
     @web.post("/api/config/gmail-app")
     def config_gmail_app():
@@ -232,6 +257,7 @@ def create_app(testing: bool = False) -> Flask:
         # Database-internal paths and recipient metadata are not needed by the UI.
         # Never expose NAS filesystem paths through the public dashboard API.
         for row in result["rows"]:
+            row["support_eligible"] = support_mail.eligible(row)
             for key in ("pod_path", "received_by", "photo_filename", "delivered_at"):
                 row.pop(key, None)
         return jsonify(**result, stats=service.stats(),

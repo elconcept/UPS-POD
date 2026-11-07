@@ -133,6 +133,23 @@ def init_db() -> None:
         )""")
         db.execute("CREATE INDEX IF NOT EXISTS ix_ups_backfill_due "
                    "ON ups_backfill(state,next_try)")
+        db.execute("""CREATE TABLE IF NOT EXISTS mail_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tracking TEXT NOT NULL REFERENCES shipments(tracking),
+            event TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'queued',
+            created_at TEXT NOT NULL,
+            sent_at TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            UNIQUE(tracking,event)
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_mail_notifications_state "
+                   "ON mail_notifications(state,id)")
+        db.execute("""CREATE TABLE IF NOT EXISTS verified_gmail_smtp (
+            email TEXT PRIMARY KEY,
+            secret_hash TEXT NOT NULL,
+            verified_at TEXT NOT NULL
+        )""")
     # Historical entries can predate the audit subsystem. Materialize missing
     # audit events once, so no retry row is invisible in logs.
     with connection() as db:
@@ -392,6 +409,37 @@ UPS_EXTRA_COLUMNS = {
     "ups.delivery_start": ("Początek przedziału doręczenia", "package.deliveryTime.startTime"),
     "ups.delivery_end": ("Koniec przedziału doręczenia", "package.deliveryTime.endTime"),
     "ups.weight_unit": ("Jednostka masy paczki", "package.weight.unitOfMeasurement"),
+    "ups.weight_value": ("Masa według UPS", "package.weight.weight"),
+    "ups.service_code": ("Kod usługi przesyłki", "shipment.service.code"),
+    "ups.package_service_code": ("Kod usługi paczki", "package.service.code"),
+    "ups.package_service_desc": ("Nazwa usługi paczki", "package.service.description"),
+    "ups.service_level": ("Poziom usługi", "package.service.levelCode"),
+    "ups.shipment_type": ("Typ przesyłki", "shipment.shipmentType"),
+    "ups.length": ("Długość paczki", "package.dimension.length"),
+    "ups.width": ("Szerokość paczki", "package.dimension.width"),
+    "ups.height": ("Wysokość paczki", "package.dimension.height"),
+    "ups.dimension_unit": ("Jednostka wymiarów", "package.dimension.unitOfDimension"),
+    "ups.activity_gmt_date": ("Data ostatniego skanu UTC", "package.activity[0].gmtDate"),
+    "ups.activity_gmt_time": ("Godzina ostatniego skanu UTC", "package.activity[0].gmtTime"),
+    "ups.activity_gmt_offset": ("Przesunięcie strefy skanu", "package.activity[0].gmtOffset"),
+    "ups.activity_country": ("Kraj ostatniego skanu", "package.activity[0].destCountryCode"),
+    "ups.activity_location": ("Kod placówki skanu", "package.activity[0].location.code"),
+    "ups.activity_slic": ("Kod sortowni skanu", "package.activity[0].location.slic"),
+    "ups.activity_logical": ("Rodzaj skanu systemowego", "package.activity[0].logicalScan"),
+    "ups.exception_reason": ("Kod przyczyny wyjątku", "package.activity[0].xpldDetails.exceptionReasonCode"),
+    "ups.exception_resolution": ("Kod rozstrzygnięcia wyjątku", "package.activity[0].xpldDetails.exceptionResolutionCode"),
+    "ups.exception_status": ("Kod statusu wyjątku", "package.activity[0].xpldDetails.exceptionStatusCode"),
+    "ups.healthcare": ("Paczka medyczna", "package.isHealthCarePackage"),
+    "ups.smart_package": ("Paczka Smart Package", "package.isSmartPackage"),
+    "ups.insurance": ("Ochrona Insurance Shield", "package.isInsureShieldProtected"),
+    "ups.current_description": ("Pełny opis bieżącego statusu", "package.currentStatus.description"),
+    "ups.delivery_date_value": ("Data terminu doręczenia UPS", "package.deliveryDate[0].date"),
+    "ups.package_count_detail": ("Liczba elementów paczki", "package.packageCount"),
+    "ups.activity_dest_slic": ("Sortownia docelowa ostatniego skanu", "package.activity[0].destSLIC"),
+    "ups.ulo_number": ("Identyfikator placówki skanu", "package.activity[0].uloNumber"),
+    "ups.ulo_type": ("Typ placówki skanu", "package.activity[0].uloTypeCode"),
+    "ups.tax_indicator": ("Oznaczenie podatkowe paczki", "package.taxIndicator"),
+    "ups.return_eligible": ("Możliwość zwrotu UPS", "package.preAuthorizedReturnInfo.returnEligibilityIndicator"),
 }
 
 # Client-visible fields are explicitly mapped to fixed SQL expressions.
@@ -732,6 +780,12 @@ def save_tracking_detail(tracking: str, detail: dict) -> None:
     date = str(detail.get("ship_date") or "")
     source = str(detail.get("ship_date_source") or "")
     with connection() as db:
+        previous = db.execute("SELECT ups_status,ups_status_code FROM shipments "
+                              "WHERE tracking=?", (tracking,)).fetchone()
+        was_late = bool(previous and (
+            "delay" in (previous["ups_status"] or "").lower()
+            or "opóźn" in (previous["ups_status"] or "").lower()))
+        is_delivered = code == "D" or status.strip().lower() in {"delivered", "doręczono"}
         db.execute(
             """UPDATE shipments SET ups_status=?,ups_status_code=?,
                ups_status_detail=?,ups_event_code=?,ups_tracking_code=?,
@@ -741,6 +795,10 @@ def save_tracking_detail(tracking: str, detail: dict) -> None:
             (status, code, detail_text, event_code, tracking_code,
              date, date, date, source, utcnow(), tracking),
         )
+        if was_late and is_delivered:
+            db.execute("INSERT OR IGNORE INTO mail_notifications"
+                       "(tracking,event,state,created_at) VALUES(?, 'delayed_to_delivered',"
+                       "'queued',?)", (tracking, utcnow()))
     sync_named_pdf(tracking)
 
 
@@ -864,7 +922,9 @@ def save_tracking_metadata(tracking: str, payload: dict) -> None:
                        if isinstance(date, dict)), {})
     delivery_window = p.get("deliveryTime") or {}
     def safe_field(value):
-        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        if isinstance(value, bool):
+            return "Tak" if value else "Nie"
+        if not isinstance(value, (str, int, float)):
             return ""
         return safe_description(str(value))[:180]
     raw_extra = {
@@ -884,6 +944,37 @@ def save_tracking_metadata(tracking: str, payload: dict) -> None:
         "ups.delivery_start": delivery_window.get("startTime"),
         "ups.delivery_end": delivery_window.get("endTime"),
         "ups.weight_unit": (p.get("weight") or {}).get("unitOfMeasurement"),
+        "ups.weight_value": (p.get("weight") or {}).get("weight"),
+        "ups.service_code": (shipment.get("service") or {}).get("code"),
+        "ups.package_service_code": (p.get("service") or {}).get("code"),
+        "ups.package_service_desc": (p.get("service") or {}).get("description"),
+        "ups.service_level": (p.get("service") or {}).get("levelCode"),
+        "ups.shipment_type": shipment.get("shipmentType"),
+        "ups.length": (p.get("dimension") or {}).get("length"),
+        "ups.width": (p.get("dimension") or {}).get("width"),
+        "ups.height": (p.get("dimension") or {}).get("height"),
+        "ups.dimension_unit": (p.get("dimension") or {}).get("unitOfDimension"),
+        "ups.activity_gmt_date": event.get("gmtDate"),
+        "ups.activity_gmt_time": event.get("gmtTime"),
+        "ups.activity_gmt_offset": event.get("gmtOffset"),
+        "ups.activity_country": event.get("destCountryCode"),
+        "ups.activity_location": (event.get("location") or {}).get("code"),
+        "ups.activity_slic": (event.get("location") or {}).get("slic"),
+        "ups.activity_logical": event.get("logicalScan"),
+        "ups.exception_reason": (event.get("xpldDetails") or {}).get("exceptionReasonCode"),
+        "ups.exception_resolution": (event.get("xpldDetails") or {}).get("exceptionResolutionCode"),
+        "ups.exception_status": (event.get("xpldDetails") or {}).get("exceptionStatusCode"),
+        "ups.healthcare": p.get("isHealthCarePackage"),
+        "ups.smart_package": p.get("isSmartPackage"),
+        "ups.insurance": p.get("isInsureShieldProtected"),
+        "ups.current_description": status.get("description"),
+        "ups.delivery_date_value": first_date.get("date"),
+        "ups.package_count_detail": p.get("packageCount"),
+        "ups.activity_dest_slic": event.get("destSLIC"),
+        "ups.ulo_number": event.get("uloNumber"),
+        "ups.ulo_type": event.get("uloTypeCode"),
+        "ups.tax_indicator": p.get("taxIndicator"),
+        "ups.return_eligible": (p.get("preAuthorizedReturnInfo") or {}).get("returnEligibilityIndicator"),
     }
     extras = {key: text for key, value in raw_extra.items()
               if key in UPS_EXTRA_COLUMNS and (text := safe_field(value))}
@@ -1094,6 +1185,79 @@ def save_tracking_fields(payload: dict) -> None:
     with connection() as db:
         db.executemany("INSERT OR IGNORE INTO tracking_fields(path,first_seen_at) VALUES(?,?)",
                        [(path, utcnow()) for path in sorted(paths)])
+
+
+def reindex_archived_tracking_columns() -> int:
+    """Rebuild safe UI columns from already archived, complete UPS JSON.
+
+    Metadata only: never change state, POD, recipient, document or delivery date.
+    Previous Tracking API responses were stored losslessly.
+    """
+    marker = DATA_DIR / ".ups_extras_schema_20261107_v3"
+    if marker.exists():
+        return 0
+    count = 0
+
+    def get_path(obj, path):
+        for part in path.split("."):
+            index = 0 if part.endswith("[0]") else None
+            part = part.removesuffix("[0]")
+            if not isinstance(obj, dict):
+                return None
+            obj = obj.get(part)
+            if index is not None:
+                if not isinstance(obj, list) or not obj:
+                    return None
+                obj = obj[0]
+        return obj
+
+    with connection() as db:
+        saved = db.execute(
+            "SELECT tracking,response_json_zlib FROM ups_tracking_payloads"
+        ).fetchall()
+    for record in saved:
+        try:
+            document = json.loads(zlib.decompress(record["response_json_zlib"]))
+            packages = (document.get("trackResponse") or {}).get("shipment") or []
+            matched = next(((ship, pkg) for ship in packages if isinstance(ship, dict)
+                            for pkg in ship.get("package") or []
+                            if isinstance(pkg, dict) and
+                            str(pkg.get("trackingNumber", "")).upper() ==
+                            record["tracking"].upper()), None)
+            if matched is None:
+                continue
+            shipment, package = matched
+            extras = {}
+            for key, (_label, path) in UPS_EXTRA_COLUMNS.items():
+                root, _, rest = path.partition(".")
+                value = get_path(shipment if root == "shipment" else package, rest)
+                if isinstance(value, bool):
+                    text = "Tak" if value else "Nie"
+                elif isinstance(value, (str, int, float)):
+                    text = safe_description(str(value))[:180]
+                else:
+                    text = ""
+                if text:
+                    extras[key] = text
+            with connection() as db:
+                old = db.execute("SELECT tracking_extras FROM shipments WHERE tracking=?",
+                                 (record["tracking"],)).fetchone()
+                if not old:
+                    continue
+                try:
+                    existing = json.loads(old["tracking_extras"] or "{}")
+                except (ValueError, TypeError):
+                    existing = {}
+                current = dict(existing)
+                current.update(extras)
+                if current != existing:
+                    db.execute("UPDATE shipments SET tracking_extras=? WHERE tracking=?",
+                               (json.dumps(current, ensure_ascii=False), record["tracking"]))
+                    count += 1
+        except (ValueError, TypeError, KeyError, zlib.error):
+            continue
+    marker.write_text("safe additional keys only\n", encoding="utf-8")
+    return count
 
 
 def tracking_field_paths() -> list[str]:

@@ -6,6 +6,7 @@ claims delivery. Missing credentials are fatal; no pretend sending.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import os
 import re
 import smtplib
@@ -78,6 +79,7 @@ def gmail_app_config() -> dict[str, str] | None:
 def gmail_app_status() -> dict:
     cfg = gmail_app_config()
     return {"configured": bool(cfg), "email": cfg["email"] if cfg else "",
+            "verified": gmail_app_verified() if cfg else False,
             "method": "smtp.gmail.com:465 / hasło aplikacji"}
 
 
@@ -92,7 +94,28 @@ def gmail_app_check() -> dict:
     except (smtplib.SMTPException, OSError) as exc:
         raise SupportNotConfigured("Gmail odrzucił logowanie lub serwer jest niedostępny."
                                    " Sprawdź hasło aplikacji i ustawienia Google Workspace.") from exc
+    # Persist only a fingerprint. Changing the SMTP app password requires
+    # another successful login before autonomous operator notifications.
+    fingerprint = hashlib.sha256(
+        (cfg["email"] + "\0" + cfg["password"]).encode("utf-8")).hexdigest()
+    with service.connection() as db:
+        db.execute("INSERT INTO verified_gmail_smtp(email,secret_hash,verified_at) "
+                   "VALUES(?,?,?) ON CONFLICT(email) DO UPDATE SET "
+                   "secret_hash=excluded.secret_hash,verified_at=excluded.verified_at",
+                   (cfg["email"], fingerprint, service.utcnow()))
     return {"ok": True, "email": cfg["email"]}
+
+
+def gmail_app_verified() -> bool:
+    cfg = gmail_app_config()
+    if not cfg:
+        return False
+    fingerprint = hashlib.sha256(
+        (cfg["email"] + "\0" + cfg["password"]).encode("utf-8")).hexdigest()
+    with service.connection() as db:
+        row = db.execute("SELECT secret_hash FROM verified_gmail_smtp "
+                         "WHERE email=?", (cfg["email"],)).fetchone()
+    return bool(row and row["secret_hash"] == fingerprint)
 
 
 def configured() -> bool:
@@ -107,17 +130,52 @@ def configured() -> bool:
         return False
 
 
+def grace_expired(row: dict) -> bool:
+    """At least 24h after the *end* of a delivery day, or last delivery scan."""
+    now = dt.datetime.now(ZoneInfo("Europe/Warsaw"))
+    date = row.get("delivery_date", "")
+    kind = row.get("delivery_date_type", "")
+    if kind in {"SDD", "RDD", "DEL"} and re.fullmatch(r"\d{8}", date or ""):
+        try:
+            start = dt.datetime.strptime(date, "%Y%m%d").replace(
+                tzinfo=ZoneInfo("Europe/Warsaw"))
+        except ValueError:
+            return False
+        # Any time on the scheduled day is a legitimate delivery.
+        # Alert only after 24 further hours following that entire day.
+        return now >= start + dt.timedelta(days=2)
+
+    status = (row.get("ups_status") or "").strip().lower()
+    if status not in {"out for delivery", "w doręczeniu"}:
+        return False
+    import json
+    extras = row.get("ups_extra") or row.get("tracking_extras") or {}
+    if isinstance(extras, str):
+        try:
+            extras = json.loads(extras)
+        except (ValueError, TypeError):
+            return False
+    date = extras.get("ups.activity_date", "")
+    clock = extras.get("ups.activity_time", "")
+    if not re.fullmatch(r"\d{8}", date or ""):
+        return False
+    # Without event time, use the end of the scan day to avoid premature alerts.
+    clock = clock if re.fullmatch(r"\d{6}", clock or "") else "235959"
+    try:
+        scanned = dt.datetime.strptime(date + clock, "%Y%m%d%H%M%S").replace(
+            tzinfo=ZoneInfo("Europe/Warsaw"))
+    except ValueError:
+        return False
+    return now >= scanned + dt.timedelta(hours=24)
+
+
 def eligible(row: dict) -> bool:
-    now = dt.datetime.now(ZoneInfo("Europe/Warsaw")).strftime("%Y%m%d")
-    return (
-        row["state"] != "ready"
-        and row["ups_status_code"] != "D"
-        and row["delivery_date_type"] in {"SDD", "RDD"}
-        and bool(re.fullmatch(r"\d{8}", row["delivery_date"] or ""))
-        and row["delivery_date"] < now
-        and not (row["ups_status"] or "").lower().startswith("delivered")
-        and "doręczon" not in (row["ups_status"] or "").lower()
-    )
+    """Operator may request UPS investigation, never change status directly."""
+    status = (row.get("ups_status") or "").strip().lower()
+    return (row.get("state") != "ready"
+            and row.get("ups_status_code") != "D"
+            and status not in {"delivered", "doręczono"}
+            and grace_expired(row))
 
 
 def send_support(tracking: str) -> dict:
@@ -145,7 +203,7 @@ def send_support(tracking: str) -> dict:
         db.execute("BEGIN IMMEDIATE")
         record = db.execute(
             "SELECT tracking,shipment_id,state,ups_status,ups_status_code,"
-            "delivery_date,delivery_date_type FROM shipments WHERE tracking=?",
+            "delivery_date,delivery_date_type,tracking_extras FROM shipments WHERE tracking=?",
             (tracking,)
         ).fetchone()
         if record is None or not eligible(dict(record)):
@@ -182,7 +240,7 @@ def send_support(tracking: str) -> dict:
         "Proof of Delivery. Otherwise please provide the current investigation "
         "result and expected date.\n\n"
         "Please quote this tracking number in your reply.\n\n"
-        "Regards,\nUPS-POD shipment administration\n"
+        "Regards,\n" + (config_store.get("SUPPORT_STAFF_NAME") or "UPS-POD shipment administration") + "\n"
     )
     try:
         if provider == "gmail_app":

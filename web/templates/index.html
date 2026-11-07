@@ -16,7 +16,7 @@
   <header class="topbar">
     <div>
       <div class="eyebrow">UPS / PROOF OF DELIVERY</div>
-      <h1>ElectroSmart <span>UPS-POD</span></h1>
+      <h1><a class="brand-home" href="/" title="Strona główna i lista przesyłek">ElectroSmart <span>UPS-POD</span></a></h1>
       <p>Automatyczne pobieranie i archiwizacja potwierdzeń dostawy przesyłek międzynarodowych.</p>
     </div>
     <div class="topbar-controls">
@@ -92,7 +92,20 @@
           (zależy od polityki administratora). Próba „Sprawdź logowanie”
           nie wysyła wiadomości.</p>
         <p id="gmail-app-note" class="field-help" role="status"></p>
-        <details class="gmail-advanced"><summary>Zaawansowane: OAuth 2.0 (wymaga klienta Google)</summary>
+        <form id="employee-config-form" class="employee-config-form" autocomplete="on">
+          <h4>Osoba odpowiedzialna za przesyłki</h4>
+          <label for="employee-full-name">Imię i nazwisko pracownika</label>
+          <input id="employee-full-name" type="text" autocomplete="name" maxlength="100"
+                 placeholder="Imię i nazwisko">
+          <label for="employee-email">E-mail do powiadomień</label>
+          <input id="employee-email" type="email" autocomplete="email" maxlength="254"
+                 placeholder="pracownik@electrosmart.pl">
+          <button type="submit" class="secondary">Zapisz dane pracownika</button>
+          <p class="field-help">Automatyczne powiadomienia dotyczą zaległych POD (24 godziny
+          po planowanym terminie) i przejścia statusu z opóźnionego na doręczony.
+          Wiadomości trafiają na wskazany e-mail, nie do UPS.</p>
+        </form>
+        <details class="gmail-advanced" hidden><summary>Ustawienia historyczne OAuth</summary>
         <p class="config-help">Alternatywa dla kont bez haseł aplikacji.
           OAuth wymaga zarejestrowanej aplikacji Google; sama biblioteka
           nie zastępuje Client ID i Secret.</p>
@@ -228,7 +241,6 @@
             aria-controls="columns-dialog" title="Wybierz widoczne kolumny"><span class="button-label">Kolumny</span></button>
         </div>
       </div>
-    </div>
     <nav class="pagination pagination-top" aria-label="Paginacja nad tabelą">
       <span id="page-info-top">—</span>
       <div class="page-controls">
@@ -241,6 +253,7 @@
         <button class="secondary" type="button" id="next-page-top">Następna →</button>
       </div>
     </nav>
+    </div>
     <div class="table-wrap">
       <table id="shipments-table">
         <thead><tr>

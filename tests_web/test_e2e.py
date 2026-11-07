@@ -570,7 +570,7 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
                 "Shipment ID", "Numer UPS", "Data nadania",
                  "Data doręczenia", "Waga", "Status UPS", "Dokument", "Podgląd POD",
             ]
-            assert len(headings) == 24
+            assert len(headings) == len(service.UPS_EXTRA_COLUMNS) + 8
             expect(page.locator('.column-header[data-col="weight"]')).to_be_hidden()
             link = page.locator(f'#rows tr[data-tracking="{exception}"] td.track a')
             assert link.get_attribute("href") == (
@@ -1706,7 +1706,7 @@ def test_month_buttons_tool_groups_reset_and_column_picker(application):
                 labels = [page.locator("#"+name+" .button-label").text_content() for name in
                     ("download-selected","export-selected","fba-selected",
                      "retry-selected","clear-column-filters","default-view","columns-open")]
-                assert labels == ["ZIP","XLSX","FBA","PONÓW API",
+                assert labels == ["ZIP","XLSX","FBA","UPS API",
                     "Wyczyść filtry","Domyślny widok","Kolumny"]
                 assert page.locator(".action-secondary .action-group").count() == 3
                 assert page.locator(".action-secondary .action-group-filters #retry-selected").count() == 1
@@ -1930,6 +1930,171 @@ def test_responsive_toolbar_no_button_wrapping_390_to_1920(application):
                     assert page.locator(".pending-history-title").inner_text() == "Brak POD"
                     assert page.locator("#column-filters-toggle").get_attribute("aria-expanded") == "false"
                     context.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_staff_gmail_and_notification_outbox(application, monkeypatch):
+    import datetime as dt
+    import json
+    from zoneinfo import ZoneInfo
+    import notifications
+    import service
+    import support_mail
+    import config_store
+
+    numbers = ["1Z" + f"{i:016d}" for i in (411, 412, 413)]
+    service.add_numbers(" ".join(numbers))
+    old = (dt.datetime.now(ZoneInfo("Europe/Warsaw")) -
+           dt.timedelta(days=3)).strftime("%Y%m%d")
+    with service.connection() as db:
+        for number in numbers:
+            db.execute("UPDATE shipments SET state='retry',attempts=2,"
+                       "ups_status='Out for Delivery',tracking_extras=? WHERE tracking=?",
+                       (json.dumps({"ups.activity_date":old}), number))
+        db.execute("UPDATE shipments SET ups_status='Delayed',tracking_extras='{}' "
+                   "WHERE tracking=?", (numbers[2],))
+    with application.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as sess:
+            headers = {"X-CSRF-Token":sess["csrf"]}
+        employee={"name":"Anna Kowalska","email":"worker@example.org"}
+        assert client.post("/api/config/employee",json=employee,headers=headers).status_code==200
+        assert client.get("/api/config").json["employee"]==employee
+        cfg={"email":"office@example.org","app_password":"abcdefghijklmnop"}
+        assert client.post("/api/config/gmail-app",json=cfg,headers=headers).status_code==200
+        assert not notifications.available()
+        class SMTP:
+            def __init__(self,*args,**kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self,*args): return None
+            def login(self,u,p): assert u==cfg["email"]
+        monkeypatch.setattr(support_mail.smtplib,"SMTP_SSL",SMTP)
+        assert client.post("/api/config/gmail-app/check",
+                           json={},headers=headers).status_code==200
+        assert notifications.available()
+        rows=client.get("/api/shipments?month=all").json["rows"]
+        assert next(r for r in rows if r["tracking"]==numbers[0])["support_eligible"]
+    service.save_tracking_detail(numbers[2],{"status":"Delivered","status_typ":"D"})
+    assert notifications.queue_overdue()==2
+    sent=[]
+    monkeypatch.setattr(support_mail,"_send_smtp",
+                        lambda cfg,msg: sent.append(msg))
+    assert notifications.tick()==3
+    assert len(sent)==1
+    assert "Anna Kowalska" in sent[0].get_content()
+    assert all(n in sent[0].get_content() for n in numbers)
+    assert sent[0]["To"]==employee["email"]
+    assert notifications.tick()==0
+    with service.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM mail_notifications "
+                          "WHERE state='sent'").fetchone()[0]==3
+    config_store.update({"GMAIL_SMTP_APP_PASSWORD":"qrstuvwxyzabcdef"})
+    assert not notifications.available()
+
+
+
+def test_ups_raw_reindex_adds_observed_safe_columns_only(application):
+    import json
+    import service
+
+    number = "1Z004R316837162143"
+    service.add_numbers(number)
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET ups_status='Unchanged',"
+                   "delivery_date='20261101',tracking_extras='{}' WHERE tracking=?",
+                   (number,))
+    response = {"trackResponse": {"shipment": [
+        {"package": [{"trackingNumber": number,
+                      "dimension": {"length": "72", "height": "44", "width": "33",
+                                    "unitOfDimension": "CM"},
+                      "currentStatus": {"description": "On the Way"},
+                      "activity": [{"destSLIC": "ABCD", "xpldDetails": {
+                          "exceptionReasonCode": "99"}}],
+                      "referenceNumber": [{"number": "HIDDEN_PRIVATE_REFERENCE"}]}]}]}}
+    service.save_tracking_payload(number, response)
+    assert service.reindex_archived_tracking_columns() == 1
+    assert service.reindex_archived_tracking_columns() == 0
+    with service.connection() as db:
+        record = db.execute("SELECT * FROM shipments WHERE tracking=?",
+                            (number,)).fetchone()
+        extras = json.loads(record["tracking_extras"])
+    assert extras["ups.length"] == "72"
+    assert extras["ups.height"] == "44"
+    assert extras["ups.current_description"] == "On the Way"
+    assert extras["ups.exception_reason"] == "99"
+    assert record["ups_status"] == "Unchanged"
+    assert record["delivery_date"] == "20261101"
+    assert "HIDDEN_PRIVATE_REFERENCE" not in json.dumps(service.list_numbers())
+
+
+
+def test_browser_mail_icon_employee_home_and_autofit_responsive(application):
+    import datetime as dt
+    import json
+    import service
+    from zoneinfo import ZoneInfo
+
+    tracked = "1Z004R316837162143"
+    service.add_numbers("FBA1234567890123456 " + tracked)
+    old = (dt.datetime.now(ZoneInfo("Europe/Warsaw")) -
+           dt.timedelta(days=3)).strftime("%Y%m%d")
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET state='retry', attempts=2,"
+                   "ups_status='Out for Delivery',delivery_date='',"
+                   "delivery_date_type='',tracking_extras=? WHERE tracking=?",
+                   (json.dumps({"ups.activity_date": old,
+                                "ups.length": "44",
+                                "ups.exception_reason": "98"}),tracked))
+    server = make_server("127.0.0.1",0,application,threaded=True)
+    thread = threading.Thread(target=server.serve_forever,daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            for width in (390, 768, 1440, 1920):
+                context=browser.new_context(viewport={"width":width,"height":940})
+                context.add_cookies([{"name":"ups_pod_month","value":"all",
+                    "url":f"http://127.0.0.1:{server.server_port}"}])
+                page=context.new_page()
+                page.goto(f"http://127.0.0.1:{server.server_port}")
+                expect(page.locator("#rows tr")).to_have_count(1)
+                assert page.locator(".brand-home").get_attribute("href")=="/"
+                assert page.locator(".brand-home").inner_text()=="ElectroSmart UPS-POD"
+                expect(page.locator(".support-mail-icon")).to_be_visible()
+                assert page.locator(".support-mail-icon svg").count()==1
+                assert page.locator(".support-mail-icon").get_attribute("aria-label").startswith(
+                    "Wyślij do UPS prośbę")
+                dims=page.evaluate("""() => {
+                  const c=document.querySelector("#rows .selection-cell").getBoundingClientRect();
+                  const f=document.querySelector("#rows .fba-cell").getBoundingClientRect();
+                  const t=document.querySelector("#shipments-table").getBoundingClientRect();
+                  const w=document.querySelector("#shipments-panel .table-wrap").getBoundingClientRect();
+                  const a=document.querySelector(".action-secondary").getBoundingClientRect();
+                  const p=document.querySelector(".pagination-top").getBoundingClientRect();
+                  return {selectEnd:c.right, fbaStart:f.left, fbaWidth:f.width,
+                    tableWidth:t.width,wrapperWidth:w.width,actMiddle:a.top+a.height/2,
+                    pagerMiddle:p.top+p.height/2,documentWidth:document.documentElement.scrollWidth};
+                }""")
+                assert abs(dims["tableWidth"]-dims["wrapperWidth"]) <= 2
+                assert dims["documentWidth"]<=width+2
+                assert dims["selectEnd"]<=dims["fbaStart"]+2
+                if width>=1000:
+                    assert abs(dims["actMiddle"]-dims["pagerMiddle"])<18, dims
+                page.locator("#columns-open").click()
+                field=page.locator(".column-choice").filter(has_text="Długość paczki")
+                field.locator("input").check()
+                page.locator("#columns-done").click()
+                expect(page.locator('.column-header[data-col="ups.length"]')).to_be_visible()
+                assert page.evaluate('columnWidths["ups.length"] >= 25')
+                assert page.evaluate('document.cookie.includes("ups_pod_column_widths=")')
+                page.locator("#tab-config").click()
+                expect(page.locator("#employee-config-form")).to_be_visible()
+                expect(page.locator("#gmail-app-form")).to_be_visible()
+                expect(page.locator(".gmail-advanced")).to_be_hidden()
+                context.close()
             browser.close()
     finally:
         server.shutdown()
