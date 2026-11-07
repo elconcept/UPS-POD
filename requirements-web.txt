@@ -7,4 +7,4 @@ google-auth-oauthlib==1.5.0
 
 xlsxwriter==3.2.9
 
-pymupdf==1.26.6
+pymupdf==1.26.7
