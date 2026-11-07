@@ -1,11 +1,14 @@
 """Persistent SQLite tracking queue shared by the web UI and a single worker."""
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime as dt
 import hashlib
 import os
 import re
 import shutil
+from zoneinfo import ZoneInfo
 import sqlite3
 from pathlib import Path
 
@@ -13,6 +16,7 @@ DATA_DIR = Path(os.getenv("UPS_POD_HOME", "/data"))
 DB_PATH = DATA_DIR / "ups_pod.sqlite3"
 DOCUMENTS_DIR = Path(os.getenv("UPS_POD_PDF_DIR", str(DATA_DIR / "pod")))
 SOURCES_DIR = DATA_DIR / "source"
+PHOTO_DIR = DATA_DIR / "delivery_photos"
 LEGACY_DOCUMENTS_DIR = DATA_DIR / "pod"
 LEGACY_EXPORTS_DIR = DATA_DIR / "fba_pod"
 UNASSIGNED_FBA = "FBA0000000"
@@ -38,6 +42,7 @@ def connection() -> sqlite3.Connection:
 def init_db() -> None:
     DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    PHOTO_DIR.mkdir(parents=True, exist_ok=True)
     with connection() as db:
         db.execute(
             """CREATE TABLE IF NOT EXISTS shipments (
@@ -68,6 +73,16 @@ def init_db() -> None:
             "ship_date_source": "TEXT NOT NULL DEFAULT ''",
             "ups_status": "TEXT NOT NULL DEFAULT ''",
             "ups_status_code": "TEXT NOT NULL DEFAULT ''",
+            "weight_value": "TEXT NOT NULL DEFAULT ''",
+            "weight_unit": "TEXT NOT NULL DEFAULT ''",
+            "delivery_time_type": "TEXT NOT NULL DEFAULT ''",
+            "delivery_time_start": "TEXT NOT NULL DEFAULT ''",
+            "delivery_time_end": "TEXT NOT NULL DEFAULT ''",
+            "delivery_date": "TEXT NOT NULL DEFAULT ''",
+            "delivery_date_type": "TEXT NOT NULL DEFAULT ''",
+            "received_by": "TEXT NOT NULL DEFAULT ''",
+            "photo_filename": "TEXT NOT NULL DEFAULT ''",
+            "metadata_at": "TEXT NOT NULL DEFAULT ''",
         }.items():
             if name not in existing:
                 db.execute(f"ALTER TABLE shipments ADD COLUMN {name} {definition}")
@@ -251,7 +266,22 @@ def stats() -> dict:
     }
 
 
-def list_numbers(search: str = "", scope: str = "all", limit: int = 200, offset: int = 0) -> dict:
+def current_month() -> str:
+    return dt.datetime.now(ZoneInfo("Europe/Warsaw")).strftime("%Y-%m")
+
+
+def available_months() -> list[str]:
+    """Calendar months represented by UPS pickupDate (fallback to intake date)."""
+    with connection() as db:
+        months = [r[0] for r in db.execute(
+            "SELECT DISTINCT SUBSTR(COALESCE(NULLIF(ship_date,''), created_at),1,7) AS mon "
+            "FROM shipments WHERE length(mon)=7 ORDER BY mon DESC"
+        )]
+    return sorted({*months, current_month()}, reverse=True)
+
+
+def list_numbers(search: str = "", scope: str = "all", limit: int = 200,
+                 offset: int = 0, month: str = "all") -> dict:
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
     where = ["1=1"]
@@ -262,6 +292,11 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 200, offset:
         where.append("state!='ready'")
     elif scope != "all":
         raise ValueError("Nieprawidłowy filtr.")
+    if month and month != "all":
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            raise ValueError("Miesiąc musi mieć postać RRRR-MM.")
+        where.append("SUBSTR(COALESCE(NULLIF(ship_date,''),created_at),1,7)=?")
+        params.append(month)
     if search:
         where.append("(tracking LIKE ? OR shipment_id LIKE ? OR description LIKE ? OR error LIKE ?)")
         params.extend([f"%{search[:100]}%"] * 4)
@@ -269,13 +304,19 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 200, offset:
     with connection() as db:
         total = db.execute(f"SELECT COUNT(*) FROM shipments WHERE {condition}", params).fetchone()[0]
         rows = db.execute(
-            f"SELECT tracking,state,description,error,attempts,created_at,updated_at,"
-            f"last_attempt_at,next_attempt_at,delivered_at,pod_path,shipment_id,ship_date,"
-            f"ship_date_source,ups_status,ups_status_code FROM shipments WHERE {condition} "
-            "ORDER BY created_at DESC, tracking ASC LIMIT ? OFFSET ?",
+            "SELECT tracking,state,description,error,attempts,created_at,updated_at,"
+            "last_attempt_at,next_attempt_at,delivered_at,pod_path,shipment_id,ship_date,"
+            "ship_date_source,ups_status,ups_status_code,weight_value,weight_unit,"
+            "delivery_time_type,delivery_time_start,delivery_time_end,delivery_date,"
+            "delivery_date_type,received_by,photo_filename FROM shipments WHERE " + condition +
+            " ORDER BY (ship_date='') ASC,ship_date DESC,created_at DESC,tracking ASC "
+            "LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
-    return {"total": total, "rows": [dict(r) for r in rows]}
+    return {"total": total, "rows": [dict(r) for r in rows],
+            "months": available_months()}
+
+
 
 
 def claim_next() -> str | None:
@@ -500,6 +541,104 @@ def save_tracking_detail(tracking: str, detail: dict) -> None:
             (status, code, date, date, date, source, utcnow(), tracking),
         )
     sync_named_pdf(tracking)
+
+
+
+def _first_package(payload: dict, tracking: str) -> dict:
+    ships = (payload.get("trackResponse") or {}).get("shipment") or []
+    for shipment in ships:
+        for package in shipment.get("package") or []:
+            if str(package.get("trackingNumber", "")).upper() == tracking.upper():
+                return package
+    for shipment in ships:
+        packages = shipment.get("package") or []
+        if packages:
+            return packages[0]
+    return {}
+
+
+def save_tracking_metadata(tracking: str, payload: dict) -> None:
+    """Persist fields returned in UPS Tracking JSON, not guessed document values.
+
+    Photo is stored only when UPS explicitly provides valid image bytes.
+    photoCaptureInd=Y alone is not a retrievable image.
+    """
+    if not NUMBER.fullmatch(tracking) or not isinstance(payload, dict):
+        raise ValueError("Nieprawidłowe dane metadanych UPS.")
+    p = _first_package(payload, tracking)
+    if not p:
+        return
+    weight = p.get("weight") or {}
+    time_data = p.get("deliveryTime") or {}
+    dates = p.get("deliveryDate") or []
+    selected_date = next((d for d in dates if d.get("type") == "DEL"), None)
+    if selected_date is None:
+        selected_date = next((d for d in dates if d.get("type") == "SDD"), None)
+    if selected_date is None:
+        selected_date = dates[0] if dates else {}
+    delivered = p.get("deliveryInformation") or {}
+    photo = (delivered.get("deliveryPhoto") or {}).get("photo")
+    photo_filename = ""
+    if isinstance(photo, str) and 0 < len(photo) < 8 * 1024 * 1024:
+        if "," in photo and photo.startswith("data:image/"):
+            photo = photo.split(",", 1)[1]
+        try:
+            image = base64.b64decode(photo, validate=True)
+            ext = ("jpg" if image.startswith(b"\xff\xd8\xff") else
+                   "png" if image.startswith(b"\x89PNG\r\n\x1a\n") else
+                   "webp" if image.startswith(b"RIFF") and image[8:12] == b"WEBP" else "")
+            if ext and len(image) <= 4 * 1024 * 1024:
+                PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+                photo_filename = f"{tracking}.{ext}"
+                target = PHOTO_DIR / photo_filename
+                temp = PHOTO_DIR / f".{tracking}.image.part"
+                try:
+                    with temp.open("wb") as handle:
+                        handle.write(image)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temp, target)
+                finally:
+                    temp.unlink(missing_ok=True)
+        except (ValueError, binascii.Error):
+            pass
+    def value(obj: dict, key: str, limit: int = 160) -> str:
+        return safe_description(obj.get(key) or "")[:limit]
+    date_yyyymmdd = value(selected_date, "date", 8)
+    if not re.fullmatch(r"\d{8}", date_yyyymmdd):
+        date_yyyymmdd = ""
+    existing_photo = ""
+    with connection() as db:
+        old = db.execute("SELECT photo_filename FROM shipments WHERE tracking=?", (tracking,)).fetchone()
+        if old:
+            existing_photo = old["photo_filename"] or ""
+        db.execute(
+            "UPDATE shipments SET weight_value=?,weight_unit=?,delivery_time_type=?,"
+            "delivery_time_start=?,delivery_time_end=?,delivery_date=?,"
+            "delivery_date_type=?,received_by=?,photo_filename=?,metadata_at=?,"
+            "updated_at=? WHERE tracking=?",
+            (value(weight, "weight", 30),value(weight,"unitOfMeasurement",12),
+             value(time_data,"type",12),value(time_data,"startTime",12),
+             value(time_data,"endTime",12),date_yyyymmdd,value(selected_date,"type",12),
+             value(delivered,"receivedBy",120),photo_filename or existing_photo,
+             utcnow(),utcnow(),tracking),
+        )
+
+
+def photo_path(tracking: str) -> Path | None:
+    if not NUMBER.fullmatch(tracking):
+        return None
+    with connection() as db:
+        row = db.execute("SELECT photo_filename FROM shipments WHERE tracking=?",
+                         (tracking,)).fetchone()
+    filename = row["photo_filename"] if row else ""
+    if not filename or filename not in {f"{tracking}.{e}" for e in ("jpg","png","webp")}:
+        return None
+    target = (PHOTO_DIR / filename).resolve()
+    if not target.is_relative_to(PHOTO_DIR.resolve()) or not target.is_file():
+        return None
+    return target
+
 
 
 def policy_filename(tracking: str, shipment_id: str = "", ship_date: str = "") -> str:
