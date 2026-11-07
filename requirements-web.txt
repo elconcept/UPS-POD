@@ -1,0 +1,6 @@
+flask==3.1.1
+gunicorn==23.0.0
+requests==2.32.5
+openpyxl==3.1.5
+playwright==1.56.0
+apscheduler==3.11.1
