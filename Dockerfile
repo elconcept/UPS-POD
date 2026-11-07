@@ -5,6 +5,7 @@ WORKDIR /app
 COPY requirements-web.txt /app/
 RUN python -m pip install --no-cache-dir -r requirements-web.txt
 COPY UPS_POD/ups_pod.py /app/ups_pod.py
+COPY ups_web/ups-logo.svg /app/ups-logo.svg
 COPY web/app.py web/service.py web/worker.py /app/
 COPY web/templates/ /app/templates/
 COPY web/static/ /app/static/
