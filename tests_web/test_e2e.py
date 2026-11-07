@@ -472,3 +472,32 @@ def test_photo_flag_without_actual_image_does_not_fabricate_thumbnail(applicatio
                               "isProximityMapViewable": False}}
     }]}]}})
     assert service.photo_path(tracking) is None
+
+
+def test_variable_length_fba_ids_and_idempotent_reimport(application):
+    import service
+    tracking = "1Z004R316805636772"
+    for fba in ("FBA1", "FBA12345678", "FBA15MSX7FKL", "FBA123456789012345678901234567890123456"):
+        assert service.FBA_ID.fullmatch(fba)
+        parsed, rejected = service.parse_mixed_text(f"{fba} {tracking}")
+        assert rejected == []
+        assert parsed[0]["shipment_id"] == fba
+    first = service.add_numbers(f"FBA12345678 {tracking}")
+    assert first["added"] == 1 and first["changed"] == 1
+    again = service.add_numbers(f"FBA12345678 {tracking}")
+    assert again["added"] == 0 and again["existing"] == 1
+    assert again["changed"] == 0 and again["rejected"] == []
+    with pytest.raises(ValueError, match="Konflikt FBA"):
+        service.add_numbers(f"FBA987654321 {tracking}")
+
+
+def test_removed_delivery_columns_from_web_table(application):
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    template = (root / "web/templates/index.html").read_text()
+    script = (root / "web/static/app.js").read_text()
+    for name in ("<th>Zdjęcie</th>", "<th>Godzina doręczenia</th>", "<th>Odebrał</th>"):
+        assert name not in template
+    assert 'colspan="9"' in template
+    assert "tr.append(photoCell)" not in script
+    assert 'addCell(tr, row.received_by' not in script
