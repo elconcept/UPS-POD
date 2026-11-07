@@ -19,6 +19,8 @@ import service
 KEYS = {
     "UPS_CLIENT_ID": "UPS Client ID",
     "UPS_CLIENT_SECRET": "UPS Client Secret",
+    "GMAIL_SMTP_EMAIL": "Gmail sender address",
+    "GMAIL_SMTP_APP_PASSWORD": "Gmail app password",
     "GOOGLE_OAUTH_CLIENT_ID": "Google OAuth Client ID",
     "GOOGLE_OAUTH_CLIENT_SECRET": "Google OAuth Client Secret",
 }

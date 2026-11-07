@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 import service
 import gmail_oauth
+import config_store
 
 OFFICIAL_CONTACT = "customer.service@ups.com"
 MAIL_RE = re.compile(r"^[A-Za-z0-9_.+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
@@ -63,7 +64,40 @@ def smtp_config() -> dict[str, str | int]:
                 security=security, user=user, password=password)
 
 
+def gmail_app_config() -> dict[str, str] | None:
+    """Google SMTP with app password: no user-managed GCP OAuth project."""
+    email = config_store.get("GMAIL_SMTP_EMAIL").strip().lower()
+    password = config_store.get("GMAIL_SMTP_APP_PASSWORD").replace(" ", "")
+    if not email or not password:
+        return None
+    if not MAIL_RE.fullmatch(email) or len(password) != 16 or not password.isalnum():
+        return None
+    return {"email": email, "password": password}
+
+
+def gmail_app_status() -> dict:
+    cfg = gmail_app_config()
+    return {"configured": bool(cfg), "email": cfg["email"] if cfg else "",
+            "method": "smtp.gmail.com:465 / hasło aplikacji"}
+
+
+def gmail_app_check() -> dict:
+    cfg = gmail_app_config()
+    if cfg is None:
+        raise SupportNotConfigured("Podaj adres Gmail i 16-znakowe hasło aplikacji.")
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=18,
+                              context=ssl.create_default_context()) as smtp:
+            smtp.login(cfg["email"], cfg["password"])
+    except (smtplib.SMTPException, OSError) as exc:
+        raise SupportNotConfigured("Gmail odrzucił logowanie lub serwer jest niedostępny."
+                                   " Sprawdź hasło aplikacji i ustawienia Google Workspace.") from exc
+    return {"ok": True, "email": cfg["email"]}
+
+
 def configured() -> bool:
+    if gmail_app_config():
+        return True
     if gmail_oauth.status()["configured"]:
         return True
     try:
@@ -91,9 +125,12 @@ def send_support(tracking: str) -> dict:
         raise SupportIneligible("Nieprawidłowy numer UPS.")
     # Validate configuration before creating a case, so unconfigured clicks
     # never reserve an idempotency key.
+    gmail_app = gmail_app_config()
     gmail = gmail_oauth.status()
-    provider = "gmail" if gmail["configured"] else "smtp"
-    if provider == "gmail":
+    provider = "gmail_app" if gmail_app else "gmail" if gmail["configured"] else "smtp"
+    if provider == "gmail_app":
+        config = {"sender": gmail_app["email"], "recipient": OFFICIAL_CONTACT}
+    elif provider == "gmail":
         config = {"sender": gmail["email"], "recipient": OFFICIAL_CONTACT}
     else:
         try:
@@ -148,7 +185,12 @@ def send_support(tracking: str) -> dict:
         "Regards,\nUPS-POD shipment administration\n"
     )
     try:
-        if provider == "gmail":
+        if provider == "gmail_app":
+            _send_smtp({
+                "security": "ssl", "host": "smtp.gmail.com", "port": 465,
+                "user": gmail_app["email"], "password": gmail_app["password"],
+            }, msg)
+        elif provider == "gmail":
             gmail_oauth.send(msg)
         else:
             _send_smtp(config, msg)

@@ -96,6 +96,8 @@ def process_one(number: str, client: core.KlientUPS) -> str:
         detail = core.analizuj(code, json_body, text)
         if isinstance(json_body, dict):
             service.save_tracking_fields(json_body)
+            if code == 200:
+                service.save_tracking_payload(number, json_body, code)
             service.save_tracking_metadata(number, json_body)
         if detail['ok']:
             service.save_tracking_detail(number, detail)
@@ -212,6 +214,35 @@ def run_once(client: core.KlientUPS | None = None) -> str | None:
     return result
 
 
+def backfill_one(client: core.KlientUPS) -> bool:
+    tracking = service.next_backfill()
+    if not tracking:
+        return False
+    try:
+        attach_audit(client)
+        http_status, payload, raw = client.sledz(tracking)
+        if http_status == 200 and isinstance(payload, dict):
+            # Full response, plus existing 16 safe display fields. Never
+            # regenerate or replace a historical POD PDF during backfill.
+            service.save_tracking_payload(tracking, payload, http_status)
+            service.save_tracking_fields(payload)
+            service.save_tracking_metadata(tracking, payload)
+            service.finish_backfill(tracking, http_status=http_status)
+            service.audit("worker", "ups_backfill_done", tracking, http_status,
+                          "Zapisano pełną odpowiedź UPS.")
+        else:
+            service.finish_backfill(tracking, http_status=http_status,
+                                    error="UPS_HTTP_" + str(http_status))
+            service.audit("worker", "ups_backfill_failed", tracking, http_status,
+                          "Odpowiedź UPS niedostępna.")
+    except Exception as exc:
+        logger.error("UPS metadata backfill %s failed: %s", tracking,
+                     type(exc).__name__)
+        service.finish_backfill(tracking, http_status=0,
+                                error=type(exc).__name__)
+    return True
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     service.init_db()
@@ -226,7 +257,10 @@ def main() -> None:
     logger.info("UPS POD worker started. Sequential processing, retry every %s hours.", RETRY_HOURS)
     client = None
     active_credentials = ("", "")
-    backfill_attempted = False
+    inserted = service.enqueue_missing_payloads()
+    service.audit("worker", "metadata_backfill_queued",
+                  description=f"Do uzupełnienia: {inserted} odpowiedzi Tracking API.")
+    last_backfill_at = 0.0
     while True:
         try:
             cid, secret = credentials()
@@ -238,34 +272,20 @@ def main() -> None:
                     client = core.KlientUPS(
                         os.getenv("UPS_POD_ADRES_API", "https://onlinetools.ups.com"),
                         cid, secret, jezyk=os.getenv("UPS_TRACKING_LOCALE", "en_US"),
-            numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
+                        numer_konta=os.getenv("UPS_SHIPPER_NUMBER", ""),
                     )
-                if not backfill_attempted:
-                    backfill_attempted = True
-                    with service.connection() as db:
-                        pending = [r[0] for r in db.execute(
-                            "SELECT tracking FROM shipments WHERE state IN ('ready','retry') "
-                            "AND metadata_at='' LIMIT 100"
-                        )]
-                    for tracking in pending:
-                        try:
-                            code, payload, raw_text = client.sledz(tracking)
-                            detail = core.analizuj(code, payload, raw_text)
-                            if isinstance(payload, dict):
-                                service.save_tracking_fields(payload)
-                                service.save_tracking_metadata(tracking, payload)
-                            if detail['ok']:
-                                service.save_tracking_detail(tracking, detail)
-                                service.audit("worker", "metadata_backfill", tracking, code)
-                            else:
-                                service.audit("worker", "metadata_backfill_failed", tracking, code,
-                                              detail.get("blad", ""))
-                        except Exception as exc:
-                            service.audit("worker", "metadata_backfill_failed", tracking,
-                                          description=type(exc).__name__)
                 result = run_once(client)
                 if result is not None:
                     continue
+                # Sequential and rate-limited; do not compete with due POD
+                # operations. Each item is checkpointed in SQLite, so a
+                # container restart resumes without repeating completed items.
+                if time.monotonic() - last_backfill_at >= 2.0:
+                    backfill_one(client)
+                    last_backfill_at = time.monotonic()
+                    if service.next_backfill():
+                        time.sleep(2.0)
+                        continue
             else:
                 service.audit("worker", "credentials_missing", description="Brak konfiguracji UPS.")
                 client = None

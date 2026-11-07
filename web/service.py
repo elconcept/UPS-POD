@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import zlib
 from zoneinfo import ZoneInfo
 import sqlite3
 
@@ -113,6 +114,25 @@ def init_db() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS ix_audit_level_id ON audit(level,id)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_due ON shipments(state, next_attempt_at)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_created ON shipments(created_at)")
+        db.execute("""CREATE TABLE IF NOT EXISTS ups_tracking_payloads (
+            tracking TEXT PRIMARY KEY REFERENCES shipments(tracking),
+            response_json_zlib BLOB NOT NULL,
+            response_sha256 TEXT NOT NULL,
+            raw_bytes INTEGER NOT NULL,
+            captured_at TEXT NOT NULL,
+            http_status INTEGER NOT NULL DEFAULT 200
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS ups_backfill (
+            tracking TEXT PRIMARY KEY REFERENCES shipments(tracking),
+            state TEXT NOT NULL DEFAULT 'queued',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_try TEXT NOT NULL DEFAULT '',
+            last_http INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT '',
+            finished_at TEXT NOT NULL DEFAULT ''
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_ups_backfill_due "
+                   "ON ups_backfill(state,next_try)")
     # Historical entries can predate the audit subsystem. Materialize missing
     # audit events once, so no retry row is invisible in logs.
     with connection() as db:
@@ -711,6 +731,88 @@ def save_tracking_detail(tracking: str, detail: dict) -> None:
         )
     sync_named_pdf(tracking)
 
+
+
+def save_tracking_payload(tracking: str, payload: dict, http_status: int = 200) -> None:
+    """Persist the *complete* nested Tracking API response in lossless SQLite BLOB.
+
+    All keys, arrays, nulls, and values are preserved as UTF-8 JSON compressed
+    with zlib. Private fields (addresses, POD content, signatures) are never
+    returned by dashboard APIs. A response must have the requested package.
+    """
+    if not NUMBER.fullmatch(tracking) or not isinstance(payload, dict):
+        raise ValueError("Nieprawidłowa odpowiedź Tracking API.")
+    if not _first_package(payload, tracking):
+        raise ValueError("Brak numeru przesyłki w odpowiedzi Tracking API.")
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                         allow_nan=False).encode("utf-8")
+    if len(encoded) > 24 * 1024 * 1024:
+        raise ValueError("Odpowiedź UPS przekracza limit 24 MiB.")
+    compressed = zlib.compress(encoded, level=6)
+    with connection() as db:
+        db.execute("""INSERT INTO ups_tracking_payloads
+            (tracking,response_json_zlib,response_sha256,raw_bytes,captured_at,http_status)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(tracking) DO UPDATE SET
+                response_json_zlib=excluded.response_json_zlib,
+                response_sha256=excluded.response_sha256,
+                raw_bytes=excluded.raw_bytes,
+                captured_at=excluded.captured_at,
+                http_status=excluded.http_status""",
+            (tracking, sqlite3.Binary(compressed), hashlib.sha256(encoded).hexdigest(),
+             len(encoded), utcnow(), http_status))
+
+
+def pending_backfill_count() -> dict:
+    with connection() as db:
+        counts = db.execute("SELECT state,COUNT(*) n FROM ups_backfill "
+                            "GROUP BY state").fetchall()
+    result = {r["state"]: r["n"] for r in counts}
+    return {"queued": result.get("queued", 0), "done": result.get("done", 0),
+            "error": result.get("error", 0)}
+
+
+def enqueue_missing_payloads() -> int:
+    """Idempotent: enqueue missing raw responses only, without modifying POD state."""
+    with connection() as db:
+        count = db.execute("""INSERT OR IGNORE INTO ups_backfill(tracking)
+            SELECT s.tracking FROM shipments s
+            LEFT JOIN ups_tracking_payloads p ON p.tracking=s.tracking
+            WHERE p.tracking IS NULL""").rowcount
+    return count
+
+
+def next_backfill() -> str | None:
+    with connection() as db:
+        row = db.execute("""SELECT tracking FROM ups_backfill
+            WHERE state IN ('queued','error') AND attempts<3
+              AND (next_try='' OR next_try<=?)
+            ORDER BY CASE state WHEN 'queued' THEN 0 ELSE 1 END,
+                     attempts,tracking LIMIT 1""", (utcnow(),)).fetchone()
+    return row["tracking"] if row else None
+
+
+def finish_backfill(tracking: str, *, http_status: int, error: str = "") -> None:
+    with connection() as db:
+        if error:
+            db.execute("""UPDATE ups_backfill SET
+                state='error',attempts=attempts+1,last_http=?,
+                last_error=?,next_try=?,finished_at=''
+                WHERE tracking=?""",
+                (http_status, error[:150],
+                 (dt.datetime.now(dt.timezone.utc) +
+                  dt.timedelta(hours=3)).isoformat(timespec="seconds"), tracking))
+        else:
+            db.execute("""UPDATE ups_backfill SET
+                state='done',attempts=attempts+1,last_http=?,
+                last_error='',next_try='',finished_at=?
+                WHERE tracking=?""", (http_status, utcnow(), tracking))
+
+
+def tracking_payload_info() -> dict:
+    with connection() as db:
+        total = db.execute("SELECT COUNT(*) FROM ups_tracking_payloads").fetchone()[0]
+    return {"stored": total, **pending_backfill_count()}
 
 
 def _first_package(payload: dict, tracking: str) -> dict:

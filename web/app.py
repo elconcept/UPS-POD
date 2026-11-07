@@ -16,6 +16,8 @@ import service
 import support_mail
 import config_store
 import gmail_oauth
+import reports
+import pod_thumbnail
 
 ROOT = Path(__file__).resolve().parent
 HOST = os.getenv("PUBLIC_HOST", "ups.xlap.pl").lower()
@@ -102,7 +104,9 @@ def create_app(testing: bool = False) -> Flask:
 
     @web.get("/api/config")
     def config_status():
-        return jsonify(**config_store.masked_status(), gmail=gmail_oauth.status())
+        return jsonify(**config_store.masked_status(), gmail=gmail_oauth.status(),
+                       gmail_app=support_mail.gmail_app_status(),
+                       api_archive=service.tracking_payload_info())
 
     @web.post("/api/config/ups")
     def config_ups():
@@ -119,6 +123,38 @@ def create_app(testing: bool = False) -> Flask:
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
         return jsonify(saved=True, changed=changed, **config_store.masked_status())
+
+    @web.post("/api/config/gmail-app")
+    def config_gmail_app():
+        data = request.get_json(silent=True) or {}
+        email = str(data.get("email", "")).strip().lower()
+        secret = str(data.get("app_password", "")).replace(" ", "").strip()
+        try:
+            if email and not support_mail.MAIL_RE.fullmatch(email):
+                raise ValueError("Nieprawidłowy adres konta Gmail.")
+            if secret and (len(secret) != 16 or not secret.isalnum()):
+                raise ValueError("Hasło aplikacji Google powinno mieć 16 znaków.")
+            changed = config_store.update({
+                "GMAIL_SMTP_EMAIL": email,
+                "GMAIL_SMTP_APP_PASSWORD": secret,
+            })
+            if changed:
+                service.audit("user", "gmail_smtp_config_updated",
+                              description="Zapisano Gmail SMTP: " + ", ".join(changed))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(saved=True, changed=changed,
+                       gmail_app=support_mail.gmail_app_status())
+
+    @web.post("/api/config/gmail-app/check")
+    def config_gmail_app_check():
+        try:
+            verified = support_mail.gmail_app_check()
+        except support_mail.SupportNotConfigured as exc:
+            return jsonify(error=str(exc)), 422
+        service.audit("user", "gmail_smtp_verified",
+                      description="Gmail zaakceptował bezpieczne logowanie SMTP.")
+        return jsonify(verified)
 
     @web.post("/api/config/google")
     def config_google():
@@ -301,6 +337,31 @@ def create_app(testing: bool = False) -> Flask:
         service.audit("user", "download_pdf", tracking)
         return send_file(matching[0][1], mimetype="application/pdf",
                          as_attachment=True, download_name=filename)
+
+    @web.get("/api/shipments/<tracking>/thumbnail")
+    def pod_preview(tracking: str):
+        target = pod_thumbnail.thumbnail(tracking.upper())
+        if target is None:
+            abort(404, "Brak dostępnej miniatury dokumentu POD.")
+        return send_file(target, mimetype="image/png", max_age=0)
+
+    @web.post("/api/report/xlsx")
+    def report_xlsx():
+        data = request.get_json(silent=True) or {}
+        try:
+            stream, count = reports.build_report(data.get("trackings", []))
+        except ValueError as exc:
+            abort(400, str(exc))
+        service.audit("user", "xlsx_report_generated",
+                      description=f"Wygenerowano zestawienie dla {count} przesyłek.")
+        response = send_file(
+            stream,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name="ups-zestawienie-" + service.current_month() + ".xlsx",
+        )
+        response.headers["X-UPS-POD-Count"] = str(count)
+        return response
 
     @web.post("/api/zip")
     def zip_download():

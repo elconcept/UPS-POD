@@ -61,14 +61,41 @@
         </form>
         <p class="field-help">Zmiany będą odczytywane przez worker UPS między operacjami;
           nie są zapisywane w repozytorium.</p>
+        <p class="field-help" id="ups-raw-backfill" aria-live="polite">
+          Weryfikowanie archiwum odpowiedzi Tracking API…
+        </p>
       </article>
       <article class="config-card">
         <div class="config-card-heading">
           <h3>Gmail — nadawca zgłoszeń UPS</h3>
           <span id="gmail-config-indicator" class="config-chip">Sprawdzanie…</span>
         </div>
-        <p class="config-help">Autoryzacja Google OAuth 2.0. Używamy wyłącznie uprawnienia
-          wysyłania wiadomości (<code>gmail.send</code>), bez czytania skrzynki.</p>
+        <p class="config-help">Bez Google Cloud i bez OAuth Client ID. Wystarczy
+          adres skrzynki Google oraz odrębne <strong>16-znakowe hasło aplikacji</strong>
+          dostępne dla kont z weryfikacją dwuetapową. Nie wpisuj zwykłego hasła Google.</p>
+        <form id="gmail-app-form" autocomplete="off">
+          <label for="gmail-app-email">Adres e-mail nadawcy Gmail / Google Workspace</label>
+          <input id="gmail-app-email" type="email" maxlength="254" autocomplete="off"
+            placeholder="np. office@electrosmart.pl" spellcheck="false">
+          <label for="gmail-app-secret">Hasło aplikacji Gmail (16 znaków)</label>
+          <input id="gmail-app-secret" type="password" maxlength="32"
+            autocomplete="new-password" placeholder="•••• •••• •••• ••••">
+          <div class="config-actions">
+            <button type="submit">Zapisz Gmail</button>
+            <button id="gmail-app-check" type="button" class="secondary">Sprawdź logowanie</button>
+          </div>
+        </form>
+        <p class="config-help">Hasło aplikacji można utworzyć na
+          <a href="https://myaccount.google.com/apppasswords" target="_blank"
+             rel="noopener noreferrer">koncie Google</a>.
+          Niektóre konta Google Workspace nie dopuszczają haseł aplikacji
+          (zależy od polityki administratora). Próba „Sprawdź logowanie”
+          nie wysyła wiadomości.</p>
+        <p id="gmail-app-note" class="field-help" role="status"></p>
+        <details class="gmail-advanced"><summary>Zaawansowane: OAuth 2.0 (wymaga klienta Google)</summary>
+        <p class="config-help">Alternatywa dla kont bez haseł aplikacji.
+          OAuth wymaga zarejestrowanej aplikacji Google; sama biblioteka
+          nie zastępuje Client ID i Secret.</p>
         <div id="gmail-connected-info" class="gmail-connected-info" hidden></div>
         <form id="gmail-config-form" autocomplete="off">
           <label for="gmail-config-id">Google OAuth Client ID (aplikacja typu Web)</label>
@@ -93,6 +120,7 @@
         <p class="field-help">Po zalogowaniu przyciskiem Google konto będzie mogło wysyłać
           zgłoszenia do UPS. Token odświeżania jest przechowywany na serwerze, poza przeglądarką.
           Nie wysyłamy zgłoszeń bez kliknięcia w kolumnie „Dokument”.</p>
+        </details>
       </article>
     </div>
   </section>
@@ -161,8 +189,11 @@
       </div><div class="action-secondary">
       <button class="secondary" type="button" id="download-selected">Pobierz zaznaczone ZIP</button>
       <button class="secondary" type="button" id="download-all">Pobierz wszystkie POD ZIP</button>
+      <button class="secondary" type="button" id="export-selected">Zestawienie XLSX</button>
       <button class="secondary" type="button" id="retry-selected">Ponów zaznaczone</button>
       <button class="secondary" type="button" id="fba-selected">Przypisz FBA zaznaczonym</button>
+      <button class="secondary" type="button" id="column-filters-toggle"
+        aria-controls="column-filter-row" aria-expanded="false">Filtry kolumn</button>
       <button class="secondary" type="button" id="clear-column-filters">Wyczyść filtry kolumn</button>
       <button class="secondary" type="button" id="columns-open" aria-haspopup="dialog"
         aria-controls="columns-dialog">Kolumny <span aria-hidden="true">⚙</span></button>

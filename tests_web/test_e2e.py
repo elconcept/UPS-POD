@@ -573,6 +573,7 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
             link = page.locator(f'#rows tr[data-tracking="{exception}"] td.track a')
             assert link.get_attribute("href") == (
                 "https://www.ups.com/track?tracknum=" + exception
+                + "&loc=pl_PL&requester=ST/trackdetails"
             )
             assert link.get_attribute("target") == "_blank"
             assert "noopener" in link.get_attribute("rel")
@@ -731,6 +732,7 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
             page.keyboard.press("Alt+ArrowRight")
             expect(header.locator("th").nth(1)).to_have_attribute("data-col", "weight")
 
+            page.locator("#column-filters-toggle").click()
             page.locator('.column-filter[data-col="fba"]').fill("FBATWO")
             expect(page.locator("#rows tr")).to_have_count(1)
             expect(page.locator("#rows tr").first).to_have_attribute("data-tracking", b)
@@ -1139,7 +1141,8 @@ def test_config_tab_plain_dates_and_mixed_zip_browser(application):
             expect(page.locator("#shipments-panel")).to_be_hidden()
             expect(page.locator("#logs-panel")).to_be_hidden()
             expect(page.locator("#ups-config-id")).to_be_visible()
-            expect(page.locator("#gmail-config-id")).to_be_visible()
+            expect(page.locator("#gmail-app-email")).to_be_visible()
+            expect(page.locator("#gmail-config-id")).to_be_hidden()
             expect(page.locator("#gmail-connect")).to_be_disabled()
             assert page.locator("#tab-config").get_attribute("aria-selected") == "true"
             page.locator("#tab-shipments").click()
@@ -1195,7 +1198,7 @@ def test_tracking_table_fills_viewport_and_uses_page_vertical_scroll(application
                 if width >= 1200:
                     assert abs(m["tableWidth"] - m["wrapperWidth"]) <= 2
                 else:
-                    assert m["tableWidth"] > m["wrapperWidth"] + 200
+                    assert abs(m["tableWidth"] - m["wrapperWidth"]) <= 2
 
                 if width == 1440:
                     page.set_viewport_size({"width": 1920, "height": 1080})
@@ -1219,15 +1222,15 @@ def test_tracking_table_fills_viewport_and_uses_page_vertical_scroll(application
                       const t=document.getElementById('shipments-table');
                       return Math.abs(t.getBoundingClientRect().width-w.clientWidth)<=2;
                     }""")
-                    # If many API fields are added, only horizontal overflow is
-                    # used; the list's height is not re-clamped.
+                    # Any number of visible fields must fit the viewport without
+                    # a horizontal scrollbar. Long text gets truncated.
                     page.locator("#columns-open").click()
                     for item in page.locator("#columns-picker .column-choice input").all():
                         if not item.is_checked():
                             item.check()
                     page.locator("#columns-done").click()
                     full = metrics()
-                    assert full["tableWidth"] > full["wrapperWidth"]
+                    assert abs(full["tableWidth"] - full["wrapperWidth"]) <= 2
                     assert abs(full["contentHeight"] - full["wrapperHeight"]) <= 1
                 context.close()
             browser.close()
@@ -1379,6 +1382,240 @@ def test_selection_column_fixed_icons_polish_and_full_width(application):
                     }""")
                     assert abs(dimensions[0] - dimensions[1]) <= 2
                 page.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_full_tracking_payload_roundtrip_and_backfill_queue(application):
+    import hashlib
+    import json
+    import zlib
+    import service
+
+    tracking = "1Z004R316837162143"
+    service.add_numbers(tracking)
+    payload = {"trackResponse": {"shipment": [{
+        "pickupDate": "20261102", "package": [{
+            "trackingNumber": tracking,
+            "currentStatus": {"type": "X", "description": "On the Way: Delayed"},
+            "activity": [{"status": {"description": "Delayed"}, "date": "20261107"}],
+            "nestedExtra": {"string": "zażółć", "null": None, "array": [1, True, {"key": "value"}]},
+        }]
+    }]}}
+    assert service.enqueue_missing_payloads() == 1
+    assert service.next_backfill() == tracking
+    service.save_tracking_payload(tracking, payload)
+    with service.connection() as db:
+        record = db.execute("SELECT * FROM ups_tracking_payloads WHERE tracking=?",
+                            (tracking,)).fetchone()
+    decoded = zlib.decompress(record["response_json_zlib"])
+    assert json.loads(decoded) == payload
+    assert hashlib.sha256(decoded).hexdigest() == record["response_sha256"]
+    assert record["raw_bytes"] == len(decoded)
+    service.finish_backfill(tracking, http_status=200)
+    assert service.enqueue_missing_payloads() == 0
+    assert service.next_backfill() is None
+    assert service.tracking_payload_info()["stored"] == 1
+    # Sensitive full JSON never leaks into standard shipment list.
+    content = json.dumps(service.list_numbers(), ensure_ascii=False)
+    assert "nestedExtra" not in content
+
+
+def test_xlsx_report_selected_tracking_links_and_counters(application):
+    import io
+    import zipfile
+    import service
+    import reports
+
+    a, b = "1Z004R316837162143", "1Z004R316839216224"
+    service.add_numbers(a + " " + b)
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET state='retry',ups_status='On the Way: Delayed',"
+                   "ups_status_code='X',ship_date='2026-11-02' WHERE tracking=?", (a,))
+        db.execute("UPDATE shipments SET state='ready',ups_status='Doręczono',"
+                   "ups_status_code='D',ship_date='2026-11-03' WHERE tracking=?", (b,))
+    buf, count = reports.build_report([a, b])
+    assert count == 2
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as book:
+        assert book.testzip() is None
+        workbook = book.read("xl/workbook.xml").decode()
+        assert 'name="Przesyłki"' in workbook
+        assert 'name="Statystyki"' in workbook
+        rels = book.read("xl/worksheets/_rels/sheet1.xml.rels").decode()
+        assert "loc=pl_PL" in rels
+        assert a in rels and b in rels
+        summary = book.read("xl/worksheets/sheet2.xml").decode()
+        assert "<v>2</v>" in summary
+    with application.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as session:
+            token = session["csrf"]
+        response = client.post("/api/report/xlsx",
+                               json={"trackings": [a,b]}, headers={"X-CSRF-Token":token})
+        assert response.status_code == 200
+        assert response.data.startswith(b"PK")
+        assert "attachment" in response.headers["Content-Disposition"]
+        assert response.headers["Content-Type"].startswith(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        assert response.headers["X-UPS-POD-Count"] == "2"
+        assert client.post("/api/report/xlsx", json={"trackings":[a]}).status_code == 403
+        bad = client.post("/api/report/xlsx",
+                          json={"trackings":["1Z0000000000000000"]},
+                          headers={"X-CSRF-Token":token})
+        assert bad.status_code == 400
+
+
+def test_pdf_thumbnail_first_page_cached_and_missing(application):
+    import pymupdf
+    import service
+    import pod_thumbnail
+
+    number = "1Z004R316807294692"
+    service.add_numbers(number)
+    document = pymupdf.open()
+    page = document.new_page(width=350, height=495)
+    page.insert_text((24, 42), "UPS Proof of Delivery – sample", fontsize=15)
+    pdf = service.document_target(number)
+    pdf.write_bytes(document.tobytes())
+    document.close()
+    service.mark_ready(number, "Doręczono", "", str(pdf), "", "pdf", "thumb-test")
+    img = pod_thumbnail.thumbnail(number)
+    assert img is not None and img.read_bytes().startswith(b"\x89PNG")
+    assert pod_thumbnail.thumbnail(number) == img
+    with application.test_client() as client:
+        response = client.get(f"/api/shipments/{number}/thumbnail")
+        assert response.status_code == 200
+        assert response.mimetype == "image/png"
+        assert response.data.startswith(b"\x89PNG")
+        missing = client.get("/api/shipments/1Z0000000000000000/thumbnail")
+        assert missing.status_code == 404
+
+
+def test_gmail_app_password_config_and_login_without_gcp(application, monkeypatch):
+    import service
+    import support_mail
+
+    logins = []
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None, context=None):
+            assert host == "smtp.gmail.com" and port == 465
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def login(self, email, password): logins.append((email,password))
+    monkeypatch.setattr(support_mail.smtplib, "SMTP_SSL", FakeSMTP)
+    with application.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as session:
+            token = session["csrf"]
+        endpoint = "/api/config/gmail-app"
+        payload = {"email": "office@electrosmart.pl",
+                   "app_password": "abcdefghijklmnop"}
+        response = client.post(endpoint, json=payload, headers={"X-CSRF-Token":token})
+        assert response.status_code == 200
+        assert "abcdefghijklmnop" not in response.get_data(as_text=True)
+        stored = (service.DATA_DIR / ".env").read_text()
+        assert "GMAIL_SMTP_APP_PASSWORD=abcdefghijklmnop" in stored
+        status = client.get("/api/config").json["gmail_app"]
+        assert status["configured"] and status["email"] == payload["email"]
+        verified = client.post("/api/config/gmail-app/check",
+                               json={}, headers={"X-CSRF-Token":token})
+        assert verified.status_code == 200
+        assert verified.json["email"] == payload["email"]
+        assert logins == [(payload["email"], payload["app_password"])]
+        assert client.post(endpoint, json={"email":"bad","app_password":""},
+                           headers={"X-CSRF-Token":token}).status_code == 400
+        assert (service.DATA_DIR / ".env").stat().st_mode & 0o777 == 0o600
+
+
+def test_full_width_24_columns_filter_visibility_resizer_and_xlsx_browser(application):
+    import pymupdf
+    import service
+
+    numbers = ["1Z" + f"{i:016d}" for i in range(1, 202)]
+    service.add_numbers(" ".join(numbers))
+    first = numbers[0]
+    document = pymupdf.open()
+    page = document.new_page(width=320, height=460)
+    page.insert_text((30, 50), "UPS POD Test")
+    target = service.document_target(first)
+    target.write_bytes(document.tobytes())
+    document.close()
+    service.mark_ready(first, "Doręczono", "", str(target), "", "pdf", "test")
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            for width in (390, 1440, 1920):
+                ctx = browser.new_context(viewport={"width": width, "height": 900},
+                                          accept_downloads=True)
+                ctx.add_cookies([{
+                    "name": "ups_pod_month", "value": "all",
+                    "url": f"http://127.0.0.1:{server.server_port}"
+                }])
+                page = ctx.new_page()
+                page.goto(f"http://127.0.0.1:{server.server_port}")
+                expect(page.locator("#rows tr")).to_have_count(200)
+                expect(page.locator("#column-filter-row")).to_be_hidden()
+                page.locator("#column-filters-toggle").click()
+                expect(page.locator("#column-filter-row")).to_be_visible()
+                page.locator("#column-filters-toggle").click()
+                expect(page.locator("#column-filter-row")).to_be_hidden()
+
+                page.locator("#columns-open").click()
+                for checkbox in page.locator("#columns-picker input[type=checkbox]").all():
+                    if not checkbox.is_checked():
+                        checkbox.check()
+                page.locator("#columns-done").click()
+                def table_metrics(active_page=page):
+                    return active_page.evaluate("""() => {
+                        const wrap = document.querySelector('#shipments-panel .table-wrap');
+                        const table = document.querySelector('#shipments-table');
+                        return {wrap:wrap.clientWidth,table:table.getBoundingClientRect().width,
+                            scrollWidth:wrap.scrollWidth,body:document.documentElement.scrollWidth,
+                            overflow:getComputedStyle(wrap).overflowX};
+                    }""")
+                dims = table_metrics()
+                assert dims["body"] <= width + 1, dims
+                assert abs(dims["wrap"] - dims["table"]) < 3, dims
+                assert dims["scrollWidth"] <= dims["wrap"] + 3, dims
+                assert dims["overflow"] == "hidden", dims
+
+                page.locator("#columns-reset").count()  # no dialog reopened
+                if width == 1920:
+                    page.locator("#columns-open").click()
+                    page.locator("#columns-reset").click()
+                    page.locator("#columns-done").click()
+                    th = page.locator('.column-header[data-col="fba"]')
+                    handle = th.locator(".column-resize")
+                    original = float(th.evaluate("(el)=>el.style.width.replace('px','')"))
+                    bounds = handle.bounding_box()
+                    assert bounds
+                    page.mouse.move(bounds["x"] + bounds["width"]/2,
+                                    bounds["y"] + bounds["height"]/2)
+                    page.mouse.down()
+                    page.mouse.move(bounds["x"] + bounds["width"]/2 + 145,
+                                    bounds["y"] + bounds["height"]/2, steps=50)
+                    page.mouse.up()
+                    current = float(th.evaluate("(el)=>el.style.width.replace('px','')"))
+                    assert current > original
+                    assert abs(table_metrics()["wrap"]-table_metrics()["table"]) <= 2
+                    page.locator(f'#rows tr[data-tracking="{first}"] .document-bubble.ready').hover()
+                    expect(page.locator(".pod-preview")).to_be_visible()
+                    assert page.locator(".pod-preview img").get_attribute("src").endswith(
+                        f"/api/shipments/{first}/thumbnail")
+                    img = page.request.get(
+                        f"http://127.0.0.1:{server.server_port}/api/shipments/{first}/thumbnail")
+                    assert img.status == 200 and img.body().startswith(b"\x89PNG")
+                    page.locator(f'#rows tr[data-tracking="{first}"] input[type=checkbox]').check()
+                    expect(page.locator("#export-selected")).to_be_enabled()
+                    with page.expect_download() as download_info:
+                        page.locator("#export-selected").click()
+                    assert download_info.value.suggested_filename.endswith(".xlsx")
+                ctx.close()
             browser.close()
     finally:
         server.shutdown()

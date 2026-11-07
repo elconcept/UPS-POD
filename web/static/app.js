@@ -117,58 +117,59 @@ const COLUMN_GROW = {
   fba: 2.0, tracking: 2.0, ship_date: 0.9, delivery_date: 1.0,
   weight: 0.7, ups_status: 0.9, queue: 0.12, document: 0.5
 };
+// Column widths are implemented with <colgroup>. A drag changes ~24 <col>
+// nodes and headers, never thousands of <td> nodes; no more hover stuttering.
+// The full width is always assigned to the visible columns. Even if 24 fields
+// are enabled, the table has no horizontal scrollbar (texts then truncate).
 function applyColumnWidths() {
   const table = $("shipments-table");
   const wrapper = table.closest(".table-wrap");
   const keys = columnOrder.filter((key) => visibleColumns.has(key));
-  const baseTotal = keys.reduce((sum, key) => sum + columnWidths[key], 0);
-  const containerWidth = wrapper?.clientWidth || 0;
-  const available = Math.max(0, containerWidth - SELECT_COLUMN_WIDTH);
-  const targetWidth = Math.max(baseTotal, available) + SELECT_COLUMN_WIDTH;
-  const extra = Math.max(0, available - baseTotal);
-  const growTotal = keys.reduce((sum, key) => sum + (COLUMN_GROW[key] || 1), 0);
-  const actualWidths = {};
-  let allocated = 0;
-  keys.forEach((key, index) => {
-    const additional = index === keys.length - 1
-      ? extra - allocated
-      : Math.floor(extra * (COLUMN_GROW[key] || 1) / growTotal);
-    actualWidths[key] = columnWidths[key] + additional;
-    allocated += additional;
-  });
-  table.style.width = targetWidth + "px";
-  table.style.minWidth = targetWidth + "px";
+  const total = Math.max(1, keys.reduce((sum, key) => sum + columnWidths[key], 0));
+  const available = Math.max(1, wrapper.clientWidth - SELECT_COLUMN_WIDTH);
+  table.style.width = "100%";
+  table.style.minWidth = "0";
+  const group = table.querySelector("colgroup");
+  for (const key of keys) {
+    const width = Math.max(0.1, available * columnWidths[key] / total);
+    const column = [...group.children].find((node) => node.dataset.col === key);
+    if (column) column.style.width = width + "px";
+    const header = table.tHead.rows[0].querySelector('[data-col="' + key + '"]');
+    if (header) {
+      header.style.width = width + "px";
+      const resize = header.querySelector(".column-resize");
+      if (resize) resize.setAttribute("aria-valuenow", String(columnWidths[key]));
+    }
+  }
+  table.classList.toggle("table-dense", keys.length >= 12);
+  table.classList.toggle("table-ultra-dense", keys.length >= 18
+    || (wrapper.clientWidth < 600 && keys.length >= 10));
+}
+function applyColumnVisibility() {
+  const table = $("shipments-table");
   for (const cell of table.querySelectorAll("[data-col]")) {
-    const key = cell.dataset.col;
-    if (!COLUMN_KEYS.includes(key)) continue;
-    const shown = visibleColumns.has(key);
-    const width = shown ? actualWidths[key] : columnWidths[key];
-    cell.style.width = width + "px";
-    cell.style.minWidth = width + "px";
-    cell.style.maxWidth = width + "px";
-    cell.hidden = !shown;
+    if (!COLUMN_KEYS.includes(cell.dataset.col)) continue;
+    const shown = visibleColumns.has(cell.dataset.col);
+    if (cell.hidden !== !shown) cell.hidden = !shown;
     cell.classList.toggle("column-hidden", !shown);
   }
-  for (const resize of table.querySelectorAll(".column-resize")) {
-    const key = resize.closest("[data-col]")?.dataset.col;
-    if (key) resize.setAttribute("aria-valuenow", String(columnWidths[key]));
-  }
 }
-// Observe the actual grid container, not just window.resize: opening a sidebar,
-// changing responsive breakpoints or resizing the app should keep columns fitted.
+// Track container resizing once, not every cell on each pointer event.
 const tableWrapper = $("shipments-table").closest(".table-wrap");
 const trackingWidthObserver = new ResizeObserver(() => {
-  if (!tableWrapper || !tableWrapper.clientWidth) return;
-  applyColumnWidths();
+  if (tableWrapper.clientWidth) applyColumnWidths();
 });
 trackingWidthObserver.observe(tableWrapper);
+
 function applyColumnOrder() {
   const table = $("shipments-table");
   const head = table.tHead.rows[0];
   const filters = table.tHead.rows[1];
+  const group = table.querySelector("colgroup");
   for (const key of columnOrder) {
     head.append(head.querySelector('[data-col="' + key + '"]'));
     filters.append(filters.querySelector('[data-col="' + key + '"]'));
+    group.append(group.querySelector('[data-col="' + key + '"]'));
   }
   for (const row of table.tBodies[0].rows) {
     if (row.cells.length !== COLUMN_KEYS.length + 1) continue;
@@ -183,6 +184,7 @@ function applyColumnOrder() {
     if (direction)
       direction.textContent = key === sortBy ? (sortDirection === "asc" ? "↑" : "↓") : "↕";
   }
+  applyColumnVisibility();
   applyColumnWidths();
 }
 function moveColumn(dragged, target) {
@@ -223,6 +225,7 @@ function buildColumnPicker() {
         else if (visibleColumns.size > 1) visibleColumns.delete(key);
         else { input.checked = true; return; }
         saveColumnPrefs();
+        applyColumnVisibility();
         applyColumnWidths();
       });
       label.append(input, span);
@@ -234,6 +237,9 @@ function initColumns() {
   const header = $("shipments-table").tHead.rows[0];
   const filterRow = document.createElement("tr");
   filterRow.className = "column-filters";
+  filterRow.id = "column-filter-row";
+  filterRow.hidden = getCookie("ups_pod_filters_visible") !== "1";
+  $("column-filters-toggle").setAttribute("aria-expanded", String(!filterRow.hidden));
   filterRow.setAttribute("aria-label", "Filtry poszczególnych kolumn");
   let dragging = "";
   for (const [key, label] of EXTRA_COLUMNS) {
@@ -343,28 +349,45 @@ function initColumns() {
     resize.setAttribute("aria-valuemax", "700");
     resize.title = "Przeciągnij, aby zmienić szerokość; strzałki na klawiaturze";
     let resizing = null;
-    resize.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      resizing = { pointer: event.pointerId, startX: event.clientX, width: columnWidths[key] };
-      resize.setPointerCapture(event.pointerId);
-      th.classList.add("resizing-column");
-    });
-    resize.addEventListener("pointermove", (event) => {
+    let resizeFrame = 0;
+    const handleResizeMove = (event) => {
       if (!resizing || resizing.pointer !== event.pointerId) return;
-      columnWidths[key] = Math.min(700, Math.max(45,
-        Math.round(resizing.width + event.clientX - resizing.startX)));
-      applyColumnWidths();
-    });
+      columnWidths[key] = Math.min(700, Math.max(25, Math.round(
+        resizing.width + (event.clientX - resizing.startX) * resizing.factor)));
+      if (!resizeFrame) resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        applyColumnWidths();
+      });
+    };
     const finishResize = () => {
       if (!resizing) return;
       resizing = null;
+      document.removeEventListener("pointermove", handleResizeMove);
+      document.removeEventListener("pointerup", finishResize);
+      document.removeEventListener("pointercancel", finishResize);
+      document.documentElement.classList.remove("column-drag-resizing");
       th.classList.remove("resizing-column");
+      if (resizeFrame) cancelAnimationFrame(resizeFrame);
+      resizeFrame = 0;
+      applyColumnWidths();
       saveColumnPrefs();
     };
-    resize.addEventListener("pointerup", finishResize);
-    resize.addEventListener("pointercancel", finishResize);
+    resize.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault(); event.stopPropagation();
+      const available = Math.max(1, tableWrapper.clientWidth - SELECT_COLUMN_WIDTH);
+      const base = columnOrder.filter((field) => visibleColumns.has(field))
+        .reduce((sum, field) => sum + columnWidths[field], 0);
+      resizing = {
+        pointer: event.pointerId, startX: event.clientX,
+        width: columnWidths[key], factor: base / available
+      };
+      document.addEventListener("pointermove", handleResizeMove);
+      document.addEventListener("pointerup", finishResize);
+      document.addEventListener("pointercancel", finishResize);
+      document.documentElement.classList.add("column-drag-resizing");
+      th.classList.add("resizing-column");
+    });
     resize.addEventListener("dblclick", () => {
       columnWidths[key] = DEFAULT_WIDTHS[key]; applyColumnWidths(); saveColumnPrefs();
     });
@@ -412,6 +435,17 @@ function initColumns() {
     filterRow.append(filterCell);
   });
   header.after(filterRow);
+  const group = document.createElement("colgroup");
+  const selectCol = document.createElement("col");
+  selectCol.className = "selection-col";
+  selectCol.style.width = SELECT_COLUMN_WIDTH + "px";
+  group.append(selectCol);
+  for (const key of COLUMN_KEYS) {
+    const col = document.createElement("col");
+    col.dataset.col = key;
+    group.append(col);
+  }
+  $("shipments-table").insertBefore(group, $("shipments-table").tHead);
   applyColumnOrder();
   buildColumnPicker();
 }
@@ -490,7 +524,8 @@ function statusInfo(row) {
 }
 
 function trackingUrl(number) {
-  return "https://www.ups.com/track?tracknum=" + encodeURIComponent(number);
+  return "https://www.ups.com/track?tracknum=" + encodeURIComponent(number)
+    + "&loc=pl_PL&requester=ST/trackdetails";
 }
 
 let listReturnPoint = null;
@@ -646,7 +681,8 @@ function renderRows() {
       link.textContent = "↓ PDF";
       link.setAttribute("download", "");
       link.setAttribute("aria-label", "Pobierz PDF potwierdzenia doręczenia " + row.tracking);
-      link.title = "Pobierz potwierdzenie doręczenia (PDF)";
+      link.title = "Pobierz PDF · najedź, aby zobaczyć miniaturę POD";
+      link.dataset.tracking = row.tracking;
       doc.append(link);
     } else if (isPastDeliveryDate(row) && row.support_status === "sent") {
       const sent = document.createElement("span");
@@ -712,6 +748,41 @@ function renderRows() {
   applyColumnOrder();
 }
 
+const podTooltip = document.createElement("div");
+podTooltip.className = "pod-preview";
+podTooltip.hidden = true;
+podTooltip.setAttribute("role", "tooltip");
+const podImage = document.createElement("img");
+podImage.alt = "Miniatura pierwszej strony POD";
+podImage.loading = "lazy";
+const podCaption = document.createElement("span");
+podCaption.textContent = "Podgląd pierwszej strony PDF";
+podTooltip.append(podImage, podCaption);
+document.body.append(podTooltip);
+function showPodPreview(target) {
+  const link = target?.closest?.('a.document-bubble.ready[data-tracking]');
+  if (!link) return;
+  const tracking = link.dataset.tracking;
+  if (!tracking) return;
+  const desired = "/api/shipments/" + encodeURIComponent(tracking) + "/thumbnail";
+  if (podImage.getAttribute("src") !== desired) podImage.src = desired;
+  podTooltip.hidden = false;
+  const rect = link.getBoundingClientRect();
+  const box = podTooltip.getBoundingClientRect();
+  let left = Math.max(8, Math.min(rect.left - box.width + rect.width, innerWidth - box.width - 8));
+  let top = rect.top - box.height - 8;
+  if (top < 8) top = Math.min(innerHeight - box.height - 8, rect.bottom + 8);
+  podTooltip.style.left = left + "px";
+  podTooltip.style.top = Math.max(8, top) + "px";
+}
+function hidePodPreview() { podTooltip.hidden = true; }
+$("rows").addEventListener("mouseover", (event) => showPodPreview(event.target));
+$("rows").addEventListener("mouseout", (event) => {
+  if (event.target.closest?.('a.document-bubble.ready')) hidePodPreview();
+});
+$("rows").addEventListener("focusin", (event) => showPodPreview(event.target));
+$("rows").addEventListener("focusout", hidePodPreview);
+
 const upsTooltip = document.createElement("div");
 upsTooltip.className = "ups-tooltip";
 upsTooltip.setAttribute("role", "tooltip");
@@ -754,11 +825,14 @@ function syncSelected() {
     : "Pobierz gotowe POD; przesyłki bez dokumentu zostaną pominięte.";
   $("retry-selected").textContent = count
     ? "Ponów zaznaczone (" + count + ")" : "Ponów zaznaczone";
+  $("export-selected").textContent = count
+    ? "Zestawienie XLSX (" + count + ")" : "Zestawienie XLSX";
   $("fba-selected").textContent = count
     ? "Przypisz FBA zaznaczonym (" + count + ")" : "Przypisz FBA zaznaczonym";
   $("fba-selected").disabled = count === 0;
   $("download-selected").disabled = available === 0;
   $("retry-selected").disabled = count === 0;
+  $("export-selected").disabled = count === 0;
 }
 
 async function refresh() {
@@ -858,6 +932,16 @@ $("theme-toggle").addEventListener("click", () => {
 updateThemeButton();
 
 initColumns();
+$("column-filters-toggle").addEventListener("click", () => {
+  const filter = $("column-filter-row");
+  filter.hidden = !filter.hidden;
+  const open = !filter.hidden;
+  $("column-filters-toggle").setAttribute("aria-expanded", String(open));
+  $("column-filters-toggle").textContent = open ? "Ukryj filtry" : "Filtry kolumn";
+  saveCookie("ups_pod_filters_visible", open ? "1" : "0");
+});
+$("column-filters-toggle").textContent =
+  $("column-filter-row").hidden ? "Filtry kolumn" : "Ukryj filtry";
 $("columns-open").addEventListener("click", () => {
   buildColumnPicker();
   $("columns-dialog").showModal();
@@ -970,6 +1054,35 @@ async function downloadZip(all) {
 
 $("download-selected").addEventListener("click", () => void downloadZip(false));
 $("download-all").addEventListener("click", () => void downloadZip(true));
+$("export-selected").addEventListener("click", async () => {
+  const button = $("export-selected");
+  button.disabled = true;
+  try {
+    if (!selected.size) throw new Error("Zaznacz przynajmniej jedną przesyłkę.");
+    const response = await fetch("/api/report/xlsx", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ trackings: [...selected] }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "HTTP " + response.status);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "ups-zestawienie.xlsx";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    tableNotice("Pobrano zestawienie XLSX: " + selected.size
+      + " przesyłek, z linkami do UPS i statystykami statusów.");
+  } catch (error) {
+    tableNotice("Nie udało się utworzyć XLSX: " + error.message, true);
+  } finally { button.disabled = selected.size === 0; }
+});
 $("retry-selected").addEventListener("click", async () => {
   try {
     const result = await requestJson("/api/retry", {
@@ -1219,13 +1332,25 @@ async function refreshConfiguration() {
     $("ups-config-indicator").classList.toggle("configured", upsReady);
     $("ups-config-id").placeholder = config.ups_client_id || "Wpisz UPS Client ID";
     $("ups-config-secret").placeholder = config.ups_client_secret || "Wpisz UPS Client Secret";
+    const archive = config.api_archive || {};
+    $("ups-raw-backfill").textContent = "Pełne odpowiedzi UPS zapisane: "
+      + (archive.stored ?? "—")
+      + " · w kolejce do uzupełnienia: " + (archive.queued ?? "—")
+      + " · błędy oczekujące na ponowienie: " + (archive.error ?? "—");
     $("gmail-config-id").placeholder = config.google_client_id || "Google OAuth Client ID";
     $("gmail-config-secret").placeholder =
       config.google_client_secret || "Google OAuth Client Secret";
     const google = config.gmail;
-    $("gmail-config-indicator").textContent =
-      google.configured ? "Gmail połączony" : google.oauth_ready ? "Oczekuje na logowanie" : "Nie skonfigurowano";
-    $("gmail-config-indicator").classList.toggle("configured", google.configured);
+    const gmailApp = config.gmail_app || {};
+    $("gmail-app-email").placeholder = gmailApp.email || "np. office@electrosmart.pl";
+    $("gmail-app-note").textContent = gmailApp.configured
+      ? "Zapisany nadawca: " + gmailApp.email + ". Dla pewności kliknij «Sprawdź logowanie»."
+      : "Nie skonfigurowano prostego połączenia Gmail.";
+    $("gmail-app-check").disabled = !gmailApp.configured;
+    $("gmail-config-indicator").textContent = gmailApp.configured
+      ? "Dane Gmail zapisane" : google.configured ? "OAuth połączony"
+      : "Brak konfiguracji";
+    $("gmail-config-indicator").classList.toggle("configured", gmailApp.configured || google.configured);
     $("gmail-connected-info").hidden = !google.configured;
     $("gmail-connected-info").textContent = google.configured
       ? "Aktywny nadawca: " + google.email : "";
@@ -1255,6 +1380,38 @@ $("ups-config-form").addEventListener("submit", async (event) => {
     await refreshConfiguration();
   } catch (error) {
     configNotice(error.message, true);
+  } finally { button.disabled = false; }
+});
+$("gmail-app-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('[type="submit"]');
+  button.disabled = true;
+  try {
+    const result = await requestJson("/api/config/gmail-app", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({email: $("gmail-app-email").value.trim(),
+        app_password: $("gmail-app-secret").value.replace(/\s/g, "")}),
+    });
+    $("gmail-app-email").value = "";
+    $("gmail-app-secret").value = "";
+    configNotice(result.changed.length
+      ? "Zapisano nadawcę Gmail i hasło aplikacji. Sprawdź logowanie."
+      : "Nie zmieniono danych Gmail.");
+    await refreshConfiguration();
+  } catch (error) {
+    configNotice("Nie zapisano Gmail: " + error.message, true);
+  } finally { button.disabled = false; }
+});
+$("gmail-app-check").addEventListener("click", async () => {
+  const button = $("gmail-app-check");
+  button.disabled = true;
+  try {
+    const result = await requestJson("/api/config/gmail-app/check", {method:"POST"});
+    configNotice("Gmail potwierdził logowanie konta " + result.email
+      + ". Wiadomości będą wysyłane wyłącznie przyciskiem zgłoszenia UPS.");
+    $("gmail-app-note").textContent = "Połączenie SMTP zweryfikowane.";
+  } catch (error) {
+    configNotice("Nie udało się sprawdzić Gmail: " + error.message, true);
   } finally { button.disabled = false; }
 });
 $("gmail-config-form").addEventListener("submit", async (event) => {

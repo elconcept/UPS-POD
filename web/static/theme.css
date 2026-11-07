@@ -342,3 +342,55 @@ body{min-height:100vh;background:var(--ui-bg)}
   .pending-months{gap:4px}
   .month-count{padding:3px 6px;font-size:10px}
 }
+
+.gmail-advanced{margin-top:13px;padding:9px 11px;border:1px solid var(--ui-border);
+  border-radius:8px;background:var(--ui-inset)}
+.gmail-advanced summary{cursor:pointer;color:var(--ui-accent-strong);
+  font-size:12px;font-weight:650}
+.gmail-advanced[open] summary{margin-bottom:12px}
+.config-card input[type=email]{width:100%;min-width:0;color:var(--ui-text);
+  background:var(--ui-surface);border:1px solid var(--ui-border);
+  border-radius:8px;padding:11px 12px;font-size:12px}
+.config-actions{gap:8px;flex-wrap:wrap}
+
+/* Full viewport layout independent of how many API columns are selected. */
+#shipments-panel .table-wrap {overflow-x:hidden!important;overflow-y:visible!important}
+#shipments-table {width:100%!important;min-width:0!important;max-width:100%!important;
+  table-layout:fixed}
+#shipments-table col{min-width:0}
+#shipments-table th[data-col],#shipments-table td[data-col]{
+  min-width:0!important;max-width:none!important;overflow:hidden;
+  white-space:nowrap;text-overflow:ellipsis;box-sizing:border-box}
+#shipments-table th.column-header{overflow:hidden!important}
+#shipments-table .sort-header{display:inline-block;min-width:0;max-width:calc(100% - 18px);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+#shipments-table .column-grip{max-width:10px;overflow:hidden}
+#shipments-table td .status{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+#shipments-table.table-dense th[data-col],#shipments-table.table-dense td[data-col]{
+  padding-left:3px!important;padding-right:3px!important}
+#shipments-table.table-dense .sort-header{max-width:calc(100% - 12px);font-size:10px}
+#shipments-table.table-ultra-dense th[data-col],#shipments-table.table-ultra-dense td[data-col]{
+  padding-left:0!important;padding-right:0!important}
+#shipments-table.table-ultra-dense .sort-header{max-width:100%;font-size:9px}
+#shipments-table.table-ultra-dense .column-grip{width:5px;max-width:5px;padding:0}
+#shipments-table.table-ultra-dense .column-resize{width:3px}
+#shipments-table.table-ultra-dense .column-filter{max-width:100%;min-width:0;padding:2px 0}
+#shipments-table.table-ultra-dense .queue-icon{max-width:100%;border-radius:3px}
+#shipments-table.table-ultra-dense .fba-edit-link{display:block;overflow:hidden;
+  text-overflow:ellipsis;max-width:100%;padding:0}
+#shipments-table.table-ultra-dense td[data-col="tracking"] a{
+  display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#shipments-table td.selection-cell,#shipments-table th.selection-header,
+#shipments-table th.selection-filter{width:44px!important;max-width:44px!important;min-width:44px!important}
+
+.pod-preview{position:fixed;z-index:9000;width:265px;max-height:440px;
+  pointer-events:none;padding:9px;border-radius:10px;
+  background:var(--ui-surface);color:var(--ui-text);
+  border:1px solid var(--ui-border);box-shadow:0 12px 32px #0003}
+.pod-preview[hidden]{display:none!important}
+.pod-preview img{display:block;max-width:245px;max-height:370px;
+  margin:auto;object-fit:contain;background:#fff;border-radius:5px}
+.pod-preview span{display:block;margin-top:7px;font-size:10px;
+  text-align:center;color:var(--ui-muted)}
+
+html.column-drag-resizing,html.column-drag-resizing *{cursor:col-resize!important;user-select:none!important}
