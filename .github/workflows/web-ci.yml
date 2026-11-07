@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   quality:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +40,7 @@ jobs:
   deploy:
     needs: quality
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
       - name: Request Synology redeploy after successful live E2E
