@@ -45,7 +45,7 @@ function renderRows() {
   tbody.replaceChildren();
   if (!rows.length) {
     const tr = document.createElement("tr");
-    addCell(tr, "Brak numerów odpowiadających filtrowi.", "empty").colSpan = 6;
+    addCell(tr, "Brak numerów odpowiadających filtrowi.", "empty").colSpan = 9;
     tbody.append(tr);
   }
   for (const row of rows) {
@@ -72,13 +72,35 @@ function renderRows() {
     statusCell.title = row.error || row.description || info[2];
     statusCell.append(tag);
     tr.append(statusCell);
+    const upsCell = addCell(tr, row.ups_status || "—", "ups-status");
+    upsCell.title = row.ups_status_code || row.description || "";
+    const shipDate = addCell(tr, row.ship_date || "—", "ship-date");
+    shipDate.title = {
+      manual: "Data podana przez użytkownika / import FBA",
+      ups_pickup_date: "Pole pickupDate zwrócone przez UPS (data odbioru/nadania wg przewoźnika)",
+      ups_pickup_scan: "Data skanu odbioru przesyłki przez UPS",
+      pod_shipped_or_billed: "Data «Shipped or Billed on» z dokumentu UPS; nie musi oznaczać odbioru fizycznego",
+    }[row.ship_date_source] || "Data nieznana";
+    const fbaCell = document.createElement("td");
+    fbaCell.className = "fba-cell";
+    const fbaValue = document.createElement("span");
+    fbaValue.textContent = row.shipment_id || "Nieprzypisany";
+    fbaValue.className = row.shipment_id ? "fba-id" : "muted";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "inline-edit";
+    edit.textContent = "Edytuj";
+    edit.setAttribute("aria-label", "Edytuj FBA i datę " + row.tracking);
+    edit.addEventListener("click", () => void editFba(row));
+    fbaCell.append(fbaValue, edit);
+    tr.append(fbaCell);
     const last = row.last_attempt_at ? new Date(row.last_attempt_at).toLocaleString("pl-PL") : "—";
     const lastCell = addCell(tr, last);
     lastCell.title = row.state === "retry" && row.next_attempt_at
       ? "Kolejna próba: " + new Date(row.next_attempt_at).toLocaleString("pl-PL") : "";
     addCell(tr, row.attempts);
     const doc = document.createElement("td");
-    if (row.state === "ready") {
+    if (row.state === "ready" && row.shipment_id && row.ship_date) {
       const link = document.createElement("a");
       link.className = "download-link";
       link.href = "/api/shipments/" + encodeURIComponent(row.tracking) + "/pdf";
@@ -87,7 +109,7 @@ function renderRows() {
     } else {
       const dash = document.createElement("span");
       dash.className = "muted";
-      dash.textContent = "—";
+      dash.textContent = row.state === "ready" ? "Wymagane FBA i data" : "—";
       doc.append(dash);
     }
     tr.append(doc);
@@ -217,20 +239,68 @@ $("retry-selected").addEventListener("click", async () => {
     await refresh();
   } catch (error) { notice(error.message, true); }
 });
+async function editFba(row) {
+  const shipment_id = window.prompt("Amazon FBA Shipment ID dla " + row.tracking, row.shipment_id || "");
+  if (shipment_id === null) return;
+  const ship_date = window.prompt("Data nadania (RRRR-MM-DD)", row.ship_date || "");
+  if (ship_date === null) return;
+  const replace = Boolean(row.shipment_id && (row.shipment_id !== shipment_id.toUpperCase()
+    || row.ship_date !== ship_date));
+  if (replace && !window.confirm("Zmienić istniejące przypisanie FBA / datę dla " + row.tracking + "?")) return;
+  try {
+    await requestJson("/api/fba", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries: [{ tracking: row.tracking, shipment_id, ship_date }], replace }),
+    });
+    notice("Zapisano przypisanie FBA i datę dla " + row.tracking + ".");
+    await refresh();
+  } catch (error) { notice(error.message, true); }
+}
+
+$("fba-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const text = $("fba-rows").value.trim();
+  const button = $("fba-import-btn");
+  const status = $("fba-notice");
+  status.hidden = false;
+  status.classList.remove("error");
+  if (!text) { status.textContent = "Wklej tabelę z Excela."; status.classList.add("error"); return; }
+  button.disabled = true;
+  try {
+    const result = await requestJson("/api/fba", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    status.textContent = "Przypisano trackingów: " + result.assigned + ". Zmieniono: " + result.changed + ".";
+    $("fba-rows").value = "";
+    await refresh();
+  } catch (error) { status.textContent = error.message; status.classList.add("error"); }
+  finally { button.disabled = false; }
+});
+
 void refresh();
 setInterval(() => void refresh(), 7000);
 
 let logsBusy = false;
 let logBefore = 0;
+let logScope = "all";
 async function refreshLogs(older = false) {
   if (logsBusy || $("logs-panel").hidden) return;
   logsBusy = true;
   try {
-    const data = await requestJson("/api/logs" + (older && logBefore ? "?before=" + logBefore : ""));
+    const params = new URLSearchParams();
+    if (older && logBefore) params.set("before", String(logBefore));
+    if (logScope === "problems") params.set("levels", "WARNING,ERROR");
+    else if (logScope !== "all") params.set("levels", logScope);
+    const data = await requestJson("/api/logs?" + params);
     if (!older) $("log-rows").replaceChildren();
     for (const row of data.items) {
       const tr = document.createElement("tr");
-      for (const value of [row.created_at, row.actor, row.operation, row.tracking, row.http_status ?? "", row.description]) {
+      const level = ["INFO", "SUCCESS", "WARNING", "ERROR"].includes(row.level) ? row.level : "INFO";
+      tr.className = "log-row level-" + level.toLowerCase()
+        + " op-" + String(row.operation || "").replace(/[^a-z0-9_-]/gi, "").toLowerCase();
+      for (const value of [new Date(row.created_at).toLocaleString("pl-PL"), level, row.actor,
+        row.operation, row.tracking, row.http_status ?? "", row.description]) {
         const td = document.createElement("td");
         td.textContent = value;
         tr.append(td);
@@ -238,7 +308,7 @@ async function refreshLogs(older = false) {
       $("log-rows").append(tr);
     }
     if (data.items.length) logBefore = data.items[data.items.length - 1].id;
-    $("logs-status").textContent = "Aktualizacja " + new Date().toLocaleTimeString();
+    $("logs-status").textContent = "Aktualizacja " + new Date().toLocaleTimeString("pl-PL") + " · filtr: " + logScope;
     $("logs-older").disabled = data.items.length < 200;
   } catch (error) { $("logs-status").textContent = error.message; }
   finally { logsBusy = false; }
@@ -252,3 +322,22 @@ $("tab-shipments").addEventListener("click", () => {
 });
 $("logs-older").addEventListener("click", () => void refreshLogs(true));
 setInterval(() => void refreshLogs(), 7000);
+
+document.querySelectorAll("[data-log-scope]").forEach((button) => {
+  button.addEventListener("click", () => {
+    logScope = button.dataset.logScope;
+    logBefore = 0;
+    document.querySelectorAll("[data-log-scope]").forEach((b) =>
+      b.classList.toggle("active", b === button));
+    void refreshLogs(false);
+  });
+});
+$("show-tracking-fields").addEventListener("click", async () => {
+  const pre = $("tracking-fields-list");
+  try {
+    const data = await requestJson("/api/tracking-fields");
+    pre.textContent = data.paths.length
+      ? data.paths.join("\n")
+      : "Brak zapisanych kluczy. Pola zostaną zarejestrowane przy kolejnym odczycie UPS API.";
+  } catch (error) { pre.textContent = error.message; }
+});
