@@ -76,16 +76,17 @@ def test_real_ups_browser_worker_pdf_zip_persistence(application):
             assignment = page.request.post(base + "/api/fba",
                                            data={"entries": [{"tracking": number,
                                                                "shipment_id": "FBA15MSX7FKL",
-                                                               "ship_date": "2026-10-30"}]},
+                                                               }]},
                                            headers={"X-CSRF-Token": csrf})
             assert assignment.status == 200
             response = page.request.get(base + f"/api/shipments/{number}/pdf")
             assert response.status == 200 and response.body().startswith(b"%PDF")
-            assert f"2026-10-30-FBA15MSX7FKL-{number}.pdf" in response.headers["content-disposition"]
+            expected_name = service.export_filename(number)
+            assert expected_name in response.headers["content-disposition"]
             response = page.request.post(base + "/api/zip", data={"all": True}, headers={"X-CSRF-Token": csrf})
             assert response.status == 200
             with zipfile.ZipFile(io.BytesIO(response.body())) as archive:
-                assert archive.namelist() == [f"2026-10-30-FBA15MSX7FKL-{number}.pdf"]
+                assert archive.namelist() == [expected_name]
                 assert archive.read(archive.namelist()[0]).startswith(b"%PDF")
             page.locator("#tab-logs").click()
             expect(page.locator("#log-rows")).to_contain_text("ups_http")
@@ -189,15 +190,9 @@ def test_fba_paste_many_trackings_filename_and_atomic_conflict(application):
                                "ship_date": "2026-10-31"}]},
             headers={"X-CSRF-Token": csrf},
         )
-        assert response.status_code == 400
-        response = client.post(
-            "/api/fba",
-            json={"entries": [{"tracking": a, "shipment_id": "FBA15MSX7FKL",
-                               "ship_date": "2026-10-31"}], "replace": True},
-            headers={"X-CSRF-Token": csrf},
-        )
         assert response.status_code == 200
-        assert service.export_filename(a).startswith("2026-10-31-")
+        # Manual or imported date cannot override verified UPS pickupDate.
+        assert service.export_filename(a).startswith("2026-10-30-")
 
 
 def test_tracking_fields_only_keys_and_log_severity_filter(application):
@@ -291,8 +286,9 @@ def test_unassigned_placeholder_and_physical_rename_on_fba_or_date_change(applic
     assert len(list(service.DOCUMENTS_DIR.glob("*.pdf"))) == 1
     assert service.ready_paths([number])[0][1] == assigned
 
-    service.assign_fba_rows([{"tracking": number, "shipment_id": "FBA15MSX7FKL",
-                             "ship_date": "2026-11-03"}], replace=True)
+    service.save_tracking_detail(number, {"ship_date": "2026-11-03",
+                                          "ship_date_source": "ups_pickup_date",
+                                          "status": "Doręczono"})
     renamed = service.DOCUMENTS_DIR / f"2026-11-03-FBA15MSX7FKL-{number}.pdf"
     assert renamed.exists() and not assigned.exists()
     with service.connection() as db:
