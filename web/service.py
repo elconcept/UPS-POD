@@ -298,23 +298,28 @@ def audit_rows(after: int = 0, before: int = 0, levels: list[str] | None = None)
 
 
 def parse_fba_text(raw: str) -> list[dict]:
-    """Paste three Excel columns: date | FBA shipment ID | UPS tracking list."""
+    """Paste two or three Excel columns: FBA | UPS list, or date | FBA | UPS list."""
     assignments: list[dict] = []
     for i, line in enumerate(raw.splitlines(), 1):
         if not line.strip():
             continue
         cells = [x.strip() for x in line.split("\t")]
-        if len(cells) < 3:
+        if len(cells) < 2:
             cells = [x.strip() for x in re.split(r"\s{2,}", line.strip())]
-        if len(cells) < 3:
-            raise ValueError(f"Wiersz {i}: wymagane trzy kolumny (data, FBA, trackingi).")
-        if cells[0].lower() in {"data", "date", "ship date"}:
+        if len(cells) < 2:
+            raise ValueError(f"Wiersz {i}: wymagane przynajmniej dwie kolumny (FBA i trackingi).")
+        if cells[0].lower() in {"data", "date", "ship date", "shipment id", "fba", "fba id"}:
             continue
-        if cells[0].upper().startswith("FBA"):
-            shipment_id, ship_date = cells[0], cells[1]
+        if len(cells) == 2:
+            shipment_id, raw_trackings = cells
+            ship_date = ""
+        elif cells[0].upper().startswith("FBA"):
+            shipment_id, ship_date = cells[:2]
+            raw_trackings = " ".join(cells[2:])
         else:
-            ship_date, shipment_id = cells[0], cells[1]
-        numbers, _ = parse_tracking_numbers(" ".join(cells[2:]))
+            ship_date, shipment_id = cells[:2]
+            raw_trackings = " ".join(cells[2:])
+        numbers, _ = parse_tracking_numbers(raw_trackings)
         if not numbers:
             raise ValueError(f"Wiersz {i}: brak poprawnych numerów UPS.")
         for number in numbers:
@@ -326,7 +331,7 @@ def parse_fba_text(raw: str) -> list[dict]:
 
 
 def assign_fba_rows(entries: list[dict], replace: bool = False) -> dict:
-    """One tracking has at most one FBA shipment ID; conflicts are transactionally rejected."""
+    """One UPS tracking can have only one FBA; reject conflicts as one transaction."""
     if not entries or len(entries) > MAX_BATCH or not isinstance(replace, bool):
         raise ValueError("Nieprawidłowa liczba przypisań lub tryb zapisu.")
     checked: dict[str, tuple[str, str]] = {}
@@ -335,14 +340,15 @@ def assign_fba_rows(entries: list[dict], replace: bool = False) -> dict:
             raise ValueError("Niepoprawny rekord przypisania.")
         tracking = str(entry.get("tracking", "")).strip().upper()
         fba = str(entry.get("shipment_id", "")).strip().upper()
-        date = str(entry.get("ship_date", "")).strip()
+        date = str(entry.get("ship_date") or "").strip()
         if not NUMBER.fullmatch(tracking) or not FBA_ID.fullmatch(fba):
             raise ValueError("Niepoprawny numer UPS lub identyfikator przesyłki Amazon FBA.")
-        try:
-            if dt.date.fromisoformat(date).isoformat() != date:
-                raise ValueError
-        except ValueError as exc:
-            raise ValueError("Data nadania musi mieć format RRRR-MM-DD.") from exc
+        if date:
+            try:
+                if dt.date.fromisoformat(date).isoformat() != date:
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError("Data nadania musi mieć format RRRR-MM-DD.") from exc
         if tracking in checked and checked[tracking] != (fba, date):
             raise ValueError(f"Sprzeczne przypisania dla {tracking}.")
         checked[tracking] = (fba, date)
@@ -351,19 +357,22 @@ def assign_fba_rows(entries: list[dict], replace: bool = False) -> dict:
     with connection() as db:
         db.execute("BEGIN IMMEDIATE")
         for tracking, (fba, date) in checked.items():
-            row = db.execute("SELECT shipment_id,ship_date FROM shipments WHERE tracking=?",
+            row = db.execute("SELECT shipment_id,ship_date,ship_date_source FROM shipments WHERE tracking=?",
                              (tracking,)).fetchone()
             if row and row["shipment_id"] and row["shipment_id"] != fba and not replace:
                 raise ValueError(f"Konflikt FBA dla {tracking}: istnieje {row['shipment_id']}.")
-            if row and row["ship_date"] and row["ship_date"] != date and row["shipment_id"] and not replace:
+            if (date and row and row["ship_date"] and row["ship_date"] != date
+                    and row["shipment_id"] and not replace):
                 raise ValueError(f"Konflikt daty dla {tracking}: istnieje {row['ship_date']}.")
             if not row:
                 db.execute("INSERT INTO shipments(tracking,created_at,updated_at,next_attempt_at) "
                            "VALUES(?,?,?,?)", (tracking, now, now, now))
-            if not row or row["shipment_id"] != fba or row["ship_date"] != date:
+            final_date = date or (row["ship_date"] if row else "")
+            final_source = "manual" if date else (row["ship_date_source"] if row else "")
+            if not row or row["shipment_id"] != fba or row["ship_date"] != final_date:
                 changed += 1
-            db.execute("UPDATE shipments SET shipment_id=?,ship_date=?,ship_date_source='manual',"
-                       "updated_at=? WHERE tracking=?", (fba, date, now, tracking))
+            db.execute("UPDATE shipments SET shipment_id=?,ship_date=?,ship_date_source=?,"
+                       "updated_at=? WHERE tracking=?", (fba, final_date, final_source, now, tracking))
     for number in checked:
         sync_named_pdf(number)
     audit("user", "fba_mapping", description=f"Przypisano {len(checked)} numerów; zmieniono {changed}.")
@@ -384,6 +393,7 @@ def save_tracking_detail(tracking: str, detail: dict) -> None:
                updated_at=? WHERE tracking=?""",
             (status, code, date, date, date, source, utcnow(), tracking),
         )
+    sync_named_pdf(tracking)
 
 
 def export_filename(tracking: str) -> str:
@@ -408,7 +418,9 @@ def sync_named_pdf(tracking: str) -> Path | None:
     source = Path(row["pod_path"] or "").resolve()
     if not source.is_relative_to(DOCUMENTS_DIR.resolve()) or not source.is_file():
         return None
-    if source.open("rb").read(4) != b"%PDF":
+    with source.open("rb") as stream:
+        signature = stream.read(4)
+    if signature != b"%PDF":
         raise ValueError("Nieprawidłowy dokument PDF w archiwum.")
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     target = EXPORTS_DIR / filename
@@ -420,6 +432,9 @@ def sync_named_pdf(tracking: str) -> Path | None:
         os.replace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
+    for old in EXPORTS_DIR.glob(f"*-{tracking}.pdf"):
+        if old != target:
+            old.unlink(missing_ok=True)
     return target
 
 
