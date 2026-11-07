@@ -9,7 +9,7 @@ Aplikacja webowa zastępuje desktopowy sposób pracy przy zbieraniu potwierdzeń
 1. Zaloguj się przez Cloudflare Access na https://ups.xlap.pl.
 2. Wklej numery UPS do pola tekstowego. Separatory: spacje, wiele spacji, tabulatory, przecinki, średniki, CR/LF i nowe wiersze.
 3. Kliknij **Dodaj do kolejki**. Identyczne numery z obecnego i wcześniejszych importów są ignorowane (`tracking` jest kluczem unikatowym SQLite).
-4. Osobny worker odpytuje UPS Tracking API sekwencyjnie, pobierając POD tylko dla doręczonych przesyłek. Proces odbywa się niezależnie od otwartej przeglądarki.
+4. Worker wewnątrz tego samego kontenera odpytuje UPS Tracking API sekwencyjnie, pobierając POD tylko dla doręczonych przesyłek. Proces odbywa się niezależnie od otwartej przeglądarki.
 5. Zielony znacznik oznacza gotowy PDF; czerwony — brak POD lub inny błąd, którego szczegóły można odczytać po najechaniu kursorem. Można filtrować, wyszukiwać i zaznaczać pozycje.
 6. Pobierz jeden PDF, wybrane PDF-y w ZIP lub **wszystkie POD** w ZIP (do 1000 dokumentów i 150 MB na żądanie).
 7. Nieudane pobrania są ponawiane automatycznie co 3 godziny. **Ponów zaznaczone** pozwala uruchomić próbę wcześniej.
@@ -21,7 +21,10 @@ Pliki źródłowe UPS są archiwizowane obok czytelnego PDF. Gdy UPS zwraca PDF,
 - NAS: `/volume2/docker/ups-pod/`
 - Sekrety: `/volume2/docker/ups-pod/.env` — uprawnienia `600`, **nigdy w GitHub**
 - Dane: `data/ups_pod.sqlite3` (SQLite + WAL), `data/ups_pod.sqlite3-wal`, `data/ups_pod.sqlite3-shm`
-- Archiwum PDF: `data/pod/<tracking>.pdf`
+- **Archiwum PDF POD: `/volume1/dokumentacja/UPS/POD/` (bind mount `/pod`)**, nazwy `RRRR-MM-DD-FBA_ID-tracking.pdf`.
+- **Brak FBA:** automatycznie `FBA0000000`; po wprowadzeniu ID plik jest przemianowywany fizycznie.
+- **Brak wiarygodnej daty:** w nazwie `BRAK_DATY`, bez fabrykowania daty. Gdy UPS zwróci `pickupDate`, plik zmienia nazwę automatycznie.
+- Starszy `data/pod/` jest zachowany jako kopia migracyjna (nie jest już katalogiem roboczym).
 - Oryginalne pliki otrzymane od UPS: `data/source/<tracking>.<typ>`
 - Klucz sesji aplikacji: `data/.web_session_key`
 - Stary plik `data/apka.xlsx` jest zachowany, **nie służy jako baza nowego webservice'u**.
@@ -44,10 +47,10 @@ Obsługiwane są także nazwy `UPS_CLIENT_ID` i `UPS_CLIENT_SECRET`. Zmiany `.en
 
 ## Technologia i wdrożenie
 
-- Flask + Gunicorn (panel, API), osobny worker Python (sekwencyjny), SQLite (unikalny tracking, status i harmonogram), UPS Tracking API + OAuth, Playwright/Chromium (HTML→PDF)
+- Flask + Gunicorn (panel, API), worker Python (sekwencyjny) w tym samym kontenerze, nadzorowany wraz z Gunicorn przez `supervisor.py`, SQLite (unikalny tracking, status i harmonogram), UPS Tracking API + OAuth, Playwright/Chromium (HTML→PDF)
 - Dockerfile w korzeniu, Docker Compose `compose.yaml`. Portainer: stack `ups-pod`.
-- Kontener `ups-pod-web` nie publikuje portów; jest dostępny tylko przez dedykowaną sieć Docker `cf_ups` z `cloudflared`.
-- Kontener `ups-pod-worker` jest odseparowany w sieci `ups-pod_ups_outbound`, wyłącznie do połączeń wychodzących.
+- **Jeden kontener `ups-pod-web`**, zawierający panel i worker; nie publikuje portów i jest dostępny tylko przez istniejący Cloudflare Tunnel `cf_ups`.
+- Ten sam kontener należy również do sieci `ups-pod_ups_outbound`, aby łączyć się z UPS API; osobny kontener `ups-pod-worker` jest usuwany przy wdrożeniu (`--remove-orphans`).
 - Polityka Access: istniejąca reguła `laptopshop.pl`, bez dodatkowych tokenów service.
 - `/healthz`: healthcheck wewnętrzny (z nagłówkiem `Host: ups.xlap.pl`).
 - `.dockerignore` wyłącza `.env` i katalog `data/` z kontekstu budowy obrazu.
@@ -94,3 +97,9 @@ Przesyłki i bieżące logi odświeżają się co 7 sekund przez AJAX. Starsze l
 paginację. Parser wyodrębnia formaty UPS 1Z (18 znaków), T (11 znaków), 9 i 12 cyfr,
 ignoruje pozostały tekst i usuwa duplikaty. Klucz główny SQLite wymusza unikalność
 również przy równoczesnych importach.
+
+## Zmiana architektury z 7.11.2026
+
+Usługa Docker Compose składa się teraz z jednego kontenera (dwa nadzorowane procesy: Gunicorn + worker). Proces nadzorczy propaguje SIGTERM, a gdy któryś proces się zakończy, kontener uruchamia się ponownie zgodnie z polityką Docker. `healthz` sprawdza także możliwość zapisu w montowanym katalogu PDF. Worker używa `locale=pl_PL` we wszystkich zapytaniach Tracking API.
+
+Wolumen NAS `/volume1/dokumentacja/UPS/POD:/pod` musi istnieć; Compose nie może go tworzyć po cichu. Katalog ma pozostawionego dotychczasowego właściciela i grupę 10001 z prawem zapisu dla procesu kontenera (UID:GID 10001:10001). Przy migracji poprzednich dokumentów zachowywane są źródłowe kopie w `data/pod` i weryfikowana integralność SHA-256 po kopiowaniu. **Jedynym aktywnym archiwum** pozostaje `/pod`. Po podaniu FBA zmieniana jest nazwa istniejącego PDF, a nie kopiowany drugi dokument.

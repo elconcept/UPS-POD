@@ -100,7 +100,7 @@ function renderRows() {
       ? "Kolejna próba: " + new Date(row.next_attempt_at).toLocaleString("pl-PL") : "";
     addCell(tr, row.attempts);
     const doc = document.createElement("td");
-    if (row.state === "ready" && row.shipment_id && row.ship_date) {
+    if (row.state === "ready") {
       const link = document.createElement("a");
       link.className = "download-link";
       link.href = "/api/shipments/" + encodeURIComponent(row.tracking) + "/pdf";
@@ -109,7 +109,7 @@ function renderRows() {
     } else {
       const dash = document.createElement("span");
       dash.className = "muted";
-      dash.textContent = row.state === "ready" ? "Wymagane FBA i data" : "—";
+      dash.textContent = "—";
       doc.append(dash);
     }
     tr.append(doc);

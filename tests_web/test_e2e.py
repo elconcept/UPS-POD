@@ -23,6 +23,8 @@ def application(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "DB_PATH", tmp_path / "test.sqlite3")
     monkeypatch.setattr(service, "DOCUMENTS_DIR", tmp_path / "pod")
     monkeypatch.setattr(service, "SOURCES_DIR", tmp_path / "source")
+    monkeypatch.setattr(service, "LEGACY_DOCUMENTS_DIR", tmp_path / "legacy" / "pod")
+    monkeypatch.setattr(service, "LEGACY_EXPORTS_DIR", tmp_path / "legacy" / "fba_pod")
     import app
     monkeypatch.setattr(app, "SESSION_KEY", tmp_path / ".session")
     return app.create_app(testing=True)
@@ -68,6 +70,9 @@ def test_real_ups_browser_worker_pdf_zip_persistence(application):
             expect(page.locator("#count-ready")).to_have_text("1", timeout=20000)
             assert page.evaluate("window.documentMarker") == document_id
             csrf = page.locator('meta[name="csrf-token"]').get_attribute("content")
+            initial_pdf = page.request.get(base + f"/api/shipments/{number}/pdf")
+            assert initial_pdf.status == 200
+            assert "FBA0000000" in initial_pdf.headers["content-disposition"]
             assignment = page.request.post(base + "/api/fba",
                                            data={"entries": [{"tracking": number,
                                                                "shipment_id": "FBA15MSX7FKL",
@@ -244,12 +249,73 @@ def test_fba_two_columns_use_ups_pickup_date_and_named_disk_copy(application):
         row = db.execute("SELECT ship_date,ship_date_source,ups_status FROM shipments "
                          "WHERE tracking=?", (number,)).fetchone()
     assert tuple(row) == ("2026-11-02", "ups_pickup_date", "Doręczono")
-    target = service.DOCUMENTS_DIR / f"{number}.pdf"
+    target = service.document_target(number)
     target.write_bytes(b"%PDF-1.4\nmock binary bytes\n")
     service.mark_ready(number, "Doręczono", "2026-11-04", str(target), "", "pdf", "hash")
     assert service.export_filename(number) == f"2026-11-02-FBA15MSX7FKL-{number}.pdf"
-    named = service.EXPORTS_DIR / service.export_filename(number)
-    assert named.read_bytes() == target.read_bytes()
+    named = service.document_target(number)
+    assert named == target
+    assert named.read_bytes().startswith(b"%PDF")
+    assert len(list(service.DOCUMENTS_DIR.glob("*.pdf"))) == 1
     # Existing pickup date is left untouched by a two-column FBA reimport.
     service.assign_fba_rows(entries)
     assert named.is_file()
+
+
+
+def test_unassigned_placeholder_and_physical_rename_on_fba_or_date_change(application):
+    import service
+    number = "1Z004R316811897667"
+    service.add_numbers(number)
+    # Without a verified UPS ship date, explicitly mark the date unknown.
+    unknown = service.document_target(number)
+    assert unknown.name == f"BRAK_DATY-FBA0000000-{number}.pdf"
+    unknown.write_bytes(b"%PDF-1.4\nvalid sample")
+    service.mark_ready(number, "Doręczono", "", str(unknown), "", "pdf", "hash")
+    assert unknown.exists()
+    assert service.ready_paths([number])[0][1] == unknown
+
+    service.save_tracking_detail(number, {"ship_date": "2026-11-02",
+                                          "ship_date_source": "ups_pickup_date",
+                                          "status": "Doręczono"})
+    from_ups = service.DOCUMENTS_DIR / f"2026-11-02-FBA0000000-{number}.pdf"
+    assert from_ups.exists() and not unknown.exists()
+    assert service.export_filename(number) == from_ups.name
+
+    service.assign_fba_rows([{"tracking": number, "shipment_id": "FBA15MSX7FKL"}])
+    assigned = service.DOCUMENTS_DIR / f"2026-11-02-FBA15MSX7FKL-{number}.pdf"
+    assert assigned.exists() and not from_ups.exists()
+    assert len(list(service.DOCUMENTS_DIR.glob("*.pdf"))) == 1
+    assert service.ready_paths([number])[0][1] == assigned
+
+    service.assign_fba_rows([{"tracking": number, "shipment_id": "FBA15MSX7FKL",
+                             "ship_date": "2026-11-03"}], replace=True)
+    renamed = service.DOCUMENTS_DIR / f"2026-11-03-FBA15MSX7FKL-{number}.pdf"
+    assert renamed.exists() and not assigned.exists()
+    with service.connection() as db:
+        saved = db.execute("SELECT pod_path FROM shipments WHERE tracking=?", (number,)).fetchone()
+    assert saved["pod_path"] == str(renamed)
+    assert len(list(service.DOCUMENTS_DIR.glob("*.pdf"))) == 1
+
+
+def test_migrate_legacy_pdf_to_mounted_archive_and_keep_backup(application):
+    import service
+    number = "1Z004R316805636772"
+    service.add_numbers(number)
+    service.save_tracking_detail(number, {"ship_date": "2026-10-30",
+                                          "ship_date_source": "ups_pickup_date"})
+    old = service.LEGACY_DOCUMENTS_DIR / (number + ".pdf")
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"%PDF-1.4\nlegacy content")
+    # Old production DB's ready record contains the legacy /data/pod/1Z... path.
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET state='ready',pod_path=? WHERE tracking=?",
+                   (str(old), number))
+    service.init_db()
+    new = service.DOCUMENTS_DIR / f"2026-10-30-FBA0000000-{number}.pdf"
+    assert new.read_bytes() == old.read_bytes()
+    assert old.exists(), "Legacy PDF backup must be preserved"
+    assert service.ready_paths([number])[0][1] == new
+    # Repeated migrations do not create duplicates.
+    service.init_db()
+    assert len(list(service.DOCUMENTS_DIR.glob("*.pdf"))) == 1
