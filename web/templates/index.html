@@ -58,10 +58,10 @@
   </section>
   <section class="panel intake fba-import">
     <div class="section-head"><div><h2>Przypisz przesyłki do Amazon FBA</h2>
-      <p>Wklej trzy kolumny z Excela: Data nadania | Shipment ID | Numery UPS (wiele numerów w jednej komórce rozdzielonych średnikami). Jeden UPS może należeć tylko do jednego FBA.</p></div></div>
+      <p>Wklej dwie kolumny z Excela: Shipment ID | numery UPS. Opcjonalna trzecia informacja to data nadania. Datę aplikacja może pobrać automatycznie z UPS <code>shipment.pickupDate</code>. Jeden UPS może należeć tylko do jednego FBA.</p></div></div>
     <form id="fba-form">
-      <textarea id="fba-rows" rows="3" spellcheck="false" placeholder="2026-10-30&#9;FBA15MSX7FKL&#9;1Z004R316807294692; 1Z004R316805636772"></textarea>
-      <div class="form-bar"><span>Import nie nadpisuje istniejącego innego FBA; konflikt zostanie zgłoszony. Daty ręczne mają pierwszeństwo przed UPS.</span>
+      <textarea id="fba-rows" rows="3" spellcheck="false" placeholder="FBA15MSX7FKL&#9;1Z004R316807294692; 1Z004R316805636772&#10;2026-10-30&#9;FBA15MSX7FKL&#9;1Z004R316836426182"></textarea>
+      <div class="form-bar"><span>Import nie nadpisuje istniejącego innego FBA; konflikt zostanie zgłoszony. Data podana ręcznie ma pierwszeństwo przed datą z UPS.</span>
         <button type="submit" id="fba-import-btn">Przypisz FBA</button></div>
     </form>
     <div id="fba-notice" class="notice" role="status" hidden></div>
