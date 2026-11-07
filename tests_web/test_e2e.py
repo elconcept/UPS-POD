@@ -158,7 +158,7 @@ def test_queue_retry_and_recovery(application):
     assert service.claim_next() is None
     assert service.retry_now([number]) == 1
     assert service.claim_next() == number
-    assert any(r["operation"] == "retry_scheduled" for r in service.audit_rows())
+    assert any(r["operation"] == "pod_retry_error" for r in service.audit_rows())
 
 
 
