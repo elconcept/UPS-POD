@@ -22,7 +22,7 @@ LEGACY_EXPORTS_DIR = DATA_DIR / "fba_pod"
 UNASSIGNED_FBA = "FBA0000000"
 UNKNOWN_DATE = "BRAK_DATY"
 MAX_BATCH = 5000
-FBA_ID = re.compile(r"^FBA[A-Z0-9]{6,30}$")
+FBA_ID = re.compile(r"^FBA[A-Z0-9]+$")
 NUMBER = re.compile(r"^[A-Z0-9]{7,34}$")
 
 
@@ -142,12 +142,10 @@ def parse_tracking_numbers(raw: str) -> tuple[list[str], list[str]]:
     return numbers, []
 
 
-# Amazon's real-world FBA identifiers in existing data are twelve characters,
-# while the newly requested ten-character format is supported as well.
-# UPS standard 1Z identifiers have 18 characters (2+16); the suggested
-# 1Z004R31 + {11} would wrongly reject the user's real 18-character numbers.
+# Amazon FBA identifiers have variable lengths; never assume seven suffix characters.
+# UPS standard 1Z identifiers have 18 characters (2 + 16).
 MIXED_TOKEN = re.compile(
-    r"(?<![A-Z0-9])(?:1Z[A-Z0-9]{16}|FBA[A-Z0-9]{7}(?:[A-Z0-9]{2})?)(?![A-Z0-9])",
+    r"(?<![A-Z0-9])(?:1Z[A-Z0-9]{16}|FBA[A-Z0-9]+)(?![A-Z0-9])",
     re.IGNORECASE,
 )
 FBA_HEADERS = {"SHIPMENT", "ID", "SHIPMENTID", "FBA", "UPS", "TRACKING", "TRACKINGS", "NUMERY", "NR", "LISTA", "DATA", "DATE"}
