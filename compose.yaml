@@ -1,0 +1,69 @@
+name: ups-pod
+services:
+  init:
+    image: busybox:1.37
+    command: ["sh","-c","mkdir -p /data/POD /data/dane /data/dane/logi && chown -R 10001:10001 /data"]
+    volumes:
+      - /volume2/docker/ups-pod/data:/data
+    restart: "no"
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ups-pod-web:local
+    container_name: ups-pod-web
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    shm_size: 256m
+    env_file: .env
+    environment:
+      PUBLIC_HOST: ups.xlap.pl
+      UPS_POD_HOME: /data
+      TZ: Europe/Warsaw
+    volumes:
+      - /volume2/docker/ups-pod/data:/data
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    networks: [cf_ups]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  scheduler:
+    image: ups-pod-web:local
+    container_name: ups-pod-scheduler
+    command: ["python","/app/scheduler.py"]
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file: .env
+    environment:
+      UPS_POD_HOME: /data
+      TZ: Europe/Warsaw
+    volumes:
+      - /volume2/docker/ups-pod/data:/data
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    networks: [ups_outbound]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+networks:
+  cf_ups:
+    external: true
+  ups_outbound:
+    driver: bridge
