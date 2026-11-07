@@ -23,7 +23,7 @@ const monthParts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
   timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit"
 }).formatToParts(new Date()).map((part) => [part.type, part.value]));
 const savedMonth = getCookie("ups_pod_month");
-let activeMonth = savedMonth === "all" || /^\d{4}-(0[1-9]|1[0-2])$/.test(savedMonth)
+let activeMonth = savedMonth === "all" || /^\d{4}(?:-(0[1-9]|1[0-2]))?$/.test(savedMonth)
   ? savedMonth : monthParts.year + "-" + monthParts.month;
 const PAGE_SIZE = 200;
 const BASE_COLUMNS = [
@@ -32,22 +32,22 @@ const BASE_COLUMNS = [
 // Allowlisted UPS Tracking API paths; values are extracted server-side without
 // returning raw addresses, personal identities, signature, photo or POD data.
 const EXTRA_COLUMNS = [
-  ["ups.service", "Usługa UPS", "shipment.service.description"],
-  ["ups.pickup_date", "Odbiór przez UPS", "shipment.pickupDate"],
-  ["ups.package_count", "Liczba paczek", "shipment.packageCount"],
-  ["ups.status_detail", "Opis statusu", "package.currentStatus.simplifiedTextDescription"],
-  ["ups.status_code", "Kod statusu", "package.currentStatus.code"],
-  ["ups.status_type", "Typ zdarzenia", "package.activity[0].status.type"],
-  ["ups.event_code", "Kod zdarzenia", "package.activity[0].status.code"],
-  ["ups.event_status_code", "Kod skanu", "package.activity[0].status.statusCode"],
-  ["ups.activity_description", "Ostatni skan", "package.activity[0].status.description"],
-  ["ups.activity_date", "Data skanu", "package.activity[0].date"],
-  ["ups.activity_time", "Czas skanu", "package.activity[0].time"],
-  ["ups.delivery_date_type", "Typ daty UPS", "package.deliveryDate[0].type"],
-  ["ups.delivery_time_type", "Typ czasu UPS", "package.deliveryTime.type"],
-  ["ups.delivery_start", "Okno od", "package.deliveryTime.startTime"],
-  ["ups.delivery_end", "Okno do", "package.deliveryTime.endTime"],
-  ["ups.weight_unit", "Jednostka wagi", "package.weight.unitOfMeasurement"],
+  ["ups.service", "Rodzaj usługi UPS", "shipment.service.description"],
+  ["ups.pickup_date", "Data przejęcia przez UPS", "shipment.pickupDate"],
+  ["ups.package_count", "Liczba paczek w przesyłce", "shipment.packageCount"],
+  ["ups.status_detail", "Komunikat o statusie UPS", "package.currentStatus.simplifiedTextDescription"],
+  ["ups.status_code", "Kod aktualnego statusu UPS", "package.currentStatus.code"],
+  ["ups.status_type", "Kategoria ostatniego zdarzenia", "package.activity[0].status.type"],
+  ["ups.event_code", "Kod ostatniego zdarzenia", "package.activity[0].status.code"],
+  ["ups.event_status_code", "Kod skanu ostatniego zdarzenia", "package.activity[0].status.statusCode"],
+  ["ups.activity_description", "Opis ostatniego skanu", "package.activity[0].status.description"],
+  ["ups.activity_date", "Data ostatniego skanu", "package.activity[0].date"],
+  ["ups.activity_time", "Godzina ostatniego skanu", "package.activity[0].time"],
+  ["ups.delivery_date_type", "Rodzaj terminu doręczenia", "package.deliveryDate[0].type"],
+  ["ups.delivery_time_type", "Rodzaj przedziału doręczenia", "package.deliveryTime.type"],
+  ["ups.delivery_start", "Początek przedziału doręczenia", "package.deliveryTime.startTime"],
+  ["ups.delivery_end", "Koniec przedziału doręczenia", "package.deliveryTime.endTime"],
+  ["ups.weight_unit", "Jednostka masy paczki", "package.weight.unitOfMeasurement"],
 ];
 const COLUMN_KEYS = [...BASE_COLUMNS, ...EXTRA_COLUMNS.map(([key]) => key)];
 const columnLabels = {
@@ -200,8 +200,8 @@ function buildColumnPicker() {
   if (!target) return;
   target.replaceChildren();
   for (const group of [
-    { title: "Podstawowe", fields: BASE_COLUMNS },
-    { title: "UPS Tracking API", fields: EXTRA_COLUMNS.map(([key]) => key) }
+    { title: "Podstawowe", fields: BASE_COLUMNS.filter((key) => key !== "weight") },
+    { title: "Dodatkowe dane UPS Tracking API", fields: ["weight", ...EXTRA_COLUMNS.map(([key]) => key)] }
   ]) {
     const heading = document.createElement("h3");
     heading.textContent = group.title;
@@ -215,11 +215,9 @@ function buildColumnPicker() {
       const span = document.createElement("span");
       span.textContent = columnLabels[key];
       const path = EXTRA_COLUMNS.find(([candidate]) => candidate === key)?.[2];
-      if (path) {
-        const help = document.createElement("small");
-        help.textContent = path;
-        span.append(help);
-      }
+      label.title = path ? "Źródło danych w UPS Tracking API: " + path
+        : key === "weight" ? "Masa paczki zwracana przez UPS." : columnLabels[key];
+      if (path) input.title = label.title;
       input.addEventListener("change", () => {
         if (input.checked) visibleColumns.add(key);
         else if (visibleColumns.size > 1) visibleColumns.delete(key);
@@ -497,8 +495,13 @@ function makeQueueIcon(kind) {
     exception: [["path", "M10.3 3.4a2 2 0 0 1 3.4 0l8.1 14.3a2 2 0 0 1-1.7 3H3.9a2 2 0 0 1-1.7-3z"],
                 ["path", "M12 9v5"], ["path", "M12 18h.01"]],
     error: [["circle", {cx:12, cy:12, r:9}], ["path", "M9 9l6 6M15 9l-6 6"]],
-    "document-waiting": [["rect", {x:4, y:3, width:16, height:18, rx:2}],
-                         ["path", "M8 9h8M8 13h8M8 17h4"]],
+    "document-waiting": [
+      ["path", "M13 2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8"],
+      ["path", "M13 2v5h5"],
+      ["path", "M9 11l5 5m0-5-5 5"],
+      ["circle", {cx:18, cy:18, r:4}],
+      ["path", "M18 16v2l1.5 1"],
+    ],
   };
   for (const [shape, data] of (drawings[kind] || drawings.queued)) {
     const node = document.createElementNS(ns, shape);
@@ -721,10 +724,12 @@ function renderRows() {
       } else {
         bubble.classList.add("document-waiting-icon");
         bubble.append(makeQueueIcon("document-waiting"));
+        bubble.title = "Brak dokumentu PDF — kliknij, aby zobaczyć dziennik operacji.";
       }
-      bubble.title = "Próby: " + row.attempts + " · Ostatnio: " + last + next
-        + (row.error ? " · " + row.error : "");
-      bubble.setAttribute("aria-label", "Historia operacji " + row.tracking);
+      bubble.title = "Brak PDF · Otwórz dziennik operacji · Próby: " + row.attempts
+        + " · Ostatnio: " + last + next + (row.error ? " · " + row.error : "");
+      bubble.setAttribute("aria-label", "Brak PDF. Otwórz dziennik operacji przesyłki "
+        + row.tracking);
       bubble.dataset.tracking = row.tracking;
       bubble.addEventListener("click", () => openShipmentLogs(row));
       doc.append(bubble);
@@ -818,17 +823,16 @@ function syncSelected() {
   }
   const count = selected.size;
   const available = [...readySelected].filter((number) => selected.has(number)).length;
-  $("download-selected").textContent = count
-    ? "Pobierz ZIP (" + available + " PDF / " + count + " wybranych)" : "Pobierz zaznaczone ZIP";
-  $("download-selected").title = count && !available
-    ? "Żaden zaznaczony numer nie ma jeszcze gotowego potwierdzenia POD."
-    : "Pobierz gotowe POD; przesyłki bez dokumentu zostaną pominięte.";
-  $("retry-selected").textContent = count
-    ? "Ponów zaznaczone (" + count + ")" : "Ponów zaznaczone";
-  $("export-selected").textContent = count
-    ? "Zestawienie XLSX (" + count + ")" : "Zestawienie XLSX";
-  $("fba-selected").textContent = count
-    ? "Przypisz FBA zaznaczonym (" + count + ")" : "Przypisz FBA zaznaczonym";
+  $("download-selected").textContent = "ZIP";
+  $("download-selected").title = available
+    ? "Pobierz " + available + " gotowych POD w ZIP (z " + count + " wybranych)."
+    : "Zaznacz przesyłki z gotowym dokumentem PDF, aby pobrać ZIP.";
+  $("retry-selected").textContent = "PONÓW API";
+  $("retry-selected").title = "Ponów sprawdzenie API dla " + count + " wybranych przesyłek.";
+  $("export-selected").textContent = "XLSX";
+  $("export-selected").title = "Utwórz zestawienie XLSX dla " + count + " wybranych przesyłek.";
+  $("fba-selected").textContent = "FBA";
+  $("fba-selected").title = "Przypisz Shipment ID dla " + count + " wybranych przesyłek.";
   $("fba-selected").disabled = count === 0;
   $("download-selected").disabled = available === 0;
   $("retry-selected").disabled = count === 0;
@@ -854,9 +858,11 @@ async function refresh() {
     const available = [...new Set([activeMonth, ...(payload.months || [])])]
       .filter((m) => /^\d{4}-\d{2}$/.test(m)).sort().reverse();
     const currentOptions = [...selector.options].map((o) => o.value);
-    if (JSON.stringify(currentOptions) !== JSON.stringify(["all", ...available])) {
+    const yearOption = String(payload.stats.year);
+    if (JSON.stringify(currentOptions) !== JSON.stringify(["all", yearOption, ...available])) {
       selector.replaceChildren();
       selector.add(new Option("Wszystkie miesiące", "all"));
+      selector.add(new Option("Rok " + yearOption, yearOption));
       for (const value of available) {
         const name = new Intl.DateTimeFormat("pl-PL", { month: "long", year: "numeric" })
           .format(new Date(value + "-01T12:00:00"));
@@ -874,20 +880,46 @@ async function refresh() {
       "w drodze " + payload.stats.on_way + " · przełożone " + payload.stats.rescheduled;
     $("count-pending").textContent = payload.stats.pending;
     const months = $("pending-months");
-    months.replaceChildren();
-    for (const bucket of (payload.stats.pending_months || [])) {
-      const element = document.createElement("span");
-      element.className = "month-count" + (bucket.pending ? " nonzero" : "");
-      element.title = "Bez pobranego POD; miesiąc nadania wg UPS lub data importu";
-      const label = document.createElement("span");
-      label.textContent = new Intl.DateTimeFormat("pl-PL", {
-        month: "short", year: "numeric"
-      }).format(new Date(bucket.month + "-01T12:00:00"));
-      const value = document.createElement("strong");
-      value.textContent = String(bucket.pending);
-      element.append(label, value);
-      months.append(element);
+    // Keep the same DOM nodes between refreshes: avoids 7-second focus loss,
+    // hover flicker and repeated rebuilding of 13 interactive buttons.
+    const buckets = [
+      ...payload.stats.pending_months.map((item) => ({key:item.month, count:item.pending})),
+      {key:yearOption, count:payload.stats.pending_year, year:true},
+    ];
+    const expectedKeys = buckets.map((item) => item.key);
+    if (JSON.stringify([...months.children].map((node) => node.dataset.month))
+        !== JSON.stringify(expectedKeys)) {
+      months.replaceChildren();
+      for (const item of buckets) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "month-count";
+        button.dataset.month = item.key;
+        button.addEventListener("click", () => selectPendingMonth(item.key));
+        const label = document.createElement("span");
+        label.className = "month-label-text";
+        label.textContent = item.year ? item.key : new Intl.DateTimeFormat("pl-PL", {
+          month:"short", year:"2-digit"
+        }).format(new Date(item.key + "-01T12:00:00"));
+        const value = document.createElement("strong");
+        button.append(label, value);
+        months.append(button);
+      }
     }
+    buckets.forEach((item, index) => {
+      const button = months.children[index];
+      button.querySelector("strong").textContent = String(item.count);
+      button.classList.toggle("nonzero", item.count > 0);
+      button.classList.toggle("active", item.key === activeMonth && scope === "missing");
+      button.setAttribute("aria-pressed", String(item.key === activeMonth && scope === "missing"));
+      const caption = item.year ? "roku " + item.key
+        : new Intl.DateTimeFormat("pl-PL", {month:"long",year:"numeric"})
+          .format(new Date(item.key + "-01T12:00:00"));
+      button.title = "Bez POD w " + caption + ": " + item.count
+        + ". Kliknij, aby wyświetlić przesyłki z tego okresu.";
+      button.setAttribute("aria-label", "Filtruj przesyłki bez POD z " + caption
+        + " (" + item.count + ")");
+    });
     $("refresh-status").textContent = "Aktualizacja: " + new Date().toLocaleTimeString("pl-PL");
     renderRows();
   } catch (error) {
@@ -897,6 +929,26 @@ async function refresh() {
     $("refresh-status").textContent = "Nie udało się odświeżyć: "
       + error.message + " · ponowna próba automatycznie";
   }
+}
+
+function selectPendingMonth(month) {
+  const active = scope === "missing" && activeMonth === month;
+  scope = "missing";
+  activeMonth = active ? "all" : month;
+  // KPI counters represent the whole month; remove unrelated text/column
+  // filters so the list corresponds to the clicked count.
+  columnFilters = {};
+  document.querySelectorAll(".column-filter").forEach((input) => { input.value = ""; });
+  saveCookie("ups_pod_column_filters", "{}");
+  $("query").value = "";
+  saveCookie("ups_pod_query", "");
+  saveCookie("ups_pod_scope", scope);
+  saveCookie("ups_pod_month", activeMonth);
+  offset = 0;
+  document.querySelectorAll("[data-scope]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.scope === scope);
+  });
+  void refresh();
 }
 
 function setIntakeCollapsed(collapsed) {
@@ -947,16 +999,33 @@ $("columns-open").addEventListener("click", () => {
   $("columns-dialog").showModal();
 });
 $("columns-done").addEventListener("click", () => $("columns-dialog").close());
-$("columns-reset").addEventListener("click", () => {
+function resetColumnLayout() {
   columnOrder = [...COLUMN_KEYS];
   visibleColumns = new Set(DEFAULT_VISIBLE);
   columnWidths = { ...DEFAULT_WIDTHS };
-  saveColumnPrefs(); applyColumnOrder(); buildColumnPicker();
-});
+  sortBy = "ship_date";
+  sortDirection = "desc";
+  saveColumnPrefs();
+  applyColumnOrder();
+  buildColumnPicker();
+  offset = 0;
+  void refresh();
+}
+$("columns-reset").addEventListener("click", resetColumnLayout);
+$("default-view").addEventListener("click", resetColumnLayout);
 $("clear-column-filters").addEventListener("click", () => {
   columnFilters = {};
   document.querySelectorAll(".column-filter").forEach((input) => { input.value = ""; });
   saveCookie("ups_pod_column_filters", "{}");
+  scope = "all";
+  activeMonth = "all";
+  $("query").value = "";
+  saveCookie("ups_pod_query", "");
+  saveCookie("ups_pod_scope", scope);
+  saveCookie("ups_pod_month", activeMonth);
+  document.querySelectorAll("[data-scope]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.scope === scope);
+  });
   offset = 0;
   void refresh();
 });
@@ -1053,7 +1122,7 @@ async function downloadZip(all) {
 }
 
 $("download-selected").addEventListener("click", () => void downloadZip(false));
-$("download-all").addEventListener("click", () => void downloadZip(true));
+
 $("export-selected").addEventListener("click", async () => {
   const button = $("export-selected");
   button.disabled = true;

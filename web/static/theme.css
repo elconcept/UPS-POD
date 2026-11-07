@@ -81,7 +81,7 @@ button.secondary:hover:not(:disabled),.secondary:hover:not(:disabled),
 .log-filter:hover:not(:disabled){background:var(--ui-hover);color:var(--ui-accent-strong)}
 button:not(.secondary):not(.filter):not(.view-tab):not(.log-filter):
 not(.sort-header):not(.column-grip):not(.icon-close):not(.fba-edit-link):
-not(.theme-toggle):not(.document-bubble):not(.support-send){background:#186596;color:white}
+not(.theme-toggle):not(.document-bubble):not(.support-send):not(.month-count){background:#186596;color:white}
 .filters{background:var(--ui-select);border-color:var(--ui-border)}
 .filters button{color:var(--ui-muted)}
 .filters button:hover:not(:disabled){background:var(--ui-hover);color:var(--ui-text)}
@@ -394,3 +394,77 @@ body{min-height:100vh;background:var(--ui-bg)}
   text-align:center;color:var(--ui-muted)}
 
 html.column-drag-resizing,html.column-drag-resizing *{cursor:col-resize!important;user-select:none!important}
+
+/* Compact, distinct toolbar groups and a full-width 12-month selector. */
+.actions{display:flex;flex-wrap:wrap;gap:7px 12px;align-items:center;margin-bottom:10px}
+.actions .action-main{display:flex;align-items:center;gap:7px;flex:1 1 550px;min-width:0}
+.actions .action-main .filters{flex:none}
+.actions .action-main .month-control{flex:none}
+.actions .action-main input[type=search]{flex:1 1 145px;min-width:105px;width:auto;max-width:none}
+.actions .action-secondary{display:flex;align-items:center;flex:0 0 auto;gap:8px;max-width:100%}
+.action-group{display:flex;gap:4px;align-items:center;min-width:0}
+.action-group+.action-group{border-left:1px solid var(--ui-border);padding-left:8px}
+.action-group button{font-size:10.5px;font-weight:750;letter-spacing:.015em;
+  padding:8px 9px;min-height:33px;white-space:nowrap}
+.action-group-settings{margin-left:auto}
+#column-filters-toggle{flex:none;min-height:33px;font-size:10.5px}
+.pending-history{display:flex;flex-direction:column;align-items:stretch;gap:7px;
+  padding:9px 12px;margin-bottom:10px;min-height:auto}
+.pending-history-title{font-size:11px;line-height:1.25;color:var(--ui-text)}
+.pending-history-help{font-size:10px;font-weight:450;color:var(--ui-muted)}
+.pending-months{display:grid;grid-template-columns:repeat(13,minmax(0,1fr));
+  width:100%;gap:5px;align-items:stretch;justify-content:stretch;min-width:0}
+button.month-count{display:flex;flex-direction:row;align-items:center;justify-content:center;
+  gap:4px;min-width:0;min-height:35px;margin:0;padding:5px 3px;
+  border-radius:7px;border:1px solid var(--ui-border);
+  background:var(--ui-inset);color:var(--ui-text);box-shadow:none;
+  font-size:10px;font-weight:550;line-height:1.15;text-align:center;
+  cursor:pointer;transition:background .12s,border-color .12s}
+button.month-count .month-label-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+button.month-count strong{color:var(--ui-text);font-size:11px;font-weight:800;
+  font-variant-numeric:tabular-nums;line-height:1}
+button.month-count:hover:not(:disabled){background:var(--ui-hover);
+  border-color:var(--ui-focus);color:var(--ui-accent-strong)}
+button.month-count.active{background:var(--ui-select);color:var(--ui-accent-strong);
+  border:2px solid var(--ui-accent);padding:4px 2px}
+button.month-count.active strong{color:var(--ui-accent-strong)}
+button.month-count:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
+button.month-count[data-month]:last-child{font-weight:800}
+button.document-bubble.document-waiting-icon{background:#fff0cf!important;
+  color:#986519!important;border:1px solid #ecd5a2!important;
+  width:29px;height:29px;padding:4px}
+button.document-bubble.document-waiting-icon svg{width:19px;height:19px}
+button.document-bubble.document-waiting-icon:hover:not(:disabled){
+  background:#ffe4aa!important;color:#72440b!important}
+:root[data-theme="dark"] button.document-bubble.document-waiting-icon{
+  background:#403626!important;border-color:#776036!important;color:#e7c283!important}
+:root[data-theme="dark"] button.document-bubble.document-waiting-icon:hover:not(:disabled){
+  background:#5c4b29!important;color:#ffdda2!important}
+@media(max-width:1150px){
+  .actions .action-main{flex:1 1 100%}
+  .actions .action-secondary{flex:1 1 100%;justify-content:flex-end;flex-wrap:wrap}
+}
+@media(max-width:850px){
+  .pending-months{grid-template-columns:repeat(7,minmax(0,1fr))}
+  .pending-history{gap:8px}
+  .pending-months button.month-count{min-height:33px}
+}
+@media(max-width:700px){
+  .actions{flex-direction:column;align-items:stretch}
+  .actions .action-main{display:flex;flex:0 1 auto;flex-wrap:wrap;gap:6px}
+  .actions .action-main input[type=search]{flex:1 1 100%;min-width:0}
+  .actions .action-secondary{display:flex;flex:0 1 auto;
+    gap:6px;flex-wrap:wrap;max-width:100%;overflow-x:visible;padding-bottom:0;
+    justify-content:flex-start}
+  .action-group{flex:0 0 auto;flex-wrap:wrap}
+  .action-group+.action-group{padding-left:6px}
+  .action-group button{font-size:10px;padding:7px 6px}
+}
+@media(max-width:480px){
+  .pending-months{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .pending-history-help{display:block;margin-top:2px}
+  .actions .action-main .month-control{flex:1 1 auto}
+  .actions .action-main #column-filters-toggle{margin-left:auto}
+  .action-group-settings{margin-left:0}
+  .action-group+.action-group{border-left:0;padding-left:0}
+}

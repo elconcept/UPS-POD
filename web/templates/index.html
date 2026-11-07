@@ -154,8 +154,8 @@
       <span id="onway-breakdown" class="stat-detail" title="Nie obejmuje opóźnionych; rozłączne grupy">—</span></article>
     <article class="stat"><div>Wszystkie bez POD</div><strong id="count-pending">—</strong></article>
   </section>
-  <section class="pending-history" aria-label="Przesyłki bez POD w ostatnich sześciu miesiącach">
-    <span class="pending-history-title">Bez POD wg miesiąca nadania</span>
+  <section class="pending-history" aria-label="Przesyłki bez POD w ostatnich dwunastu miesiącach i bieżącym roku">
+    <span class="pending-history-title">Bez POD według miesiąca nadania <span class="pending-history-help">— wybierz miesiąc lub rok, aby filtrować listę</span></span>
     <div id="pending-months" class="pending-months"><span>Ładowanie…</span></div>
   </section>
   <section class="panel intake" id="intake-panel">
@@ -186,17 +186,30 @@
       <div class="month-control"><label class="month-label" for="month-filter">Miesiąc</label>
       <select id="month-filter" aria-label="Miesiąc nadania"><option value="all">Wszystkie miesiące</option></select></div>
       <input type="search" id="query" placeholder="Szukaj numeru lub błędu…" aria-label="Szukaj" />
-      </div><div class="action-secondary">
-      <button class="secondary" type="button" id="download-selected">Pobierz zaznaczone ZIP</button>
-      <button class="secondary" type="button" id="download-all">Pobierz wszystkie POD ZIP</button>
-      <button class="secondary" type="button" id="export-selected">Zestawienie XLSX</button>
-      <button class="secondary" type="button" id="retry-selected">Ponów zaznaczone</button>
-      <button class="secondary" type="button" id="fba-selected">Przypisz FBA zaznaczonym</button>
       <button class="secondary" type="button" id="column-filters-toggle"
         aria-controls="column-filter-row" aria-expanded="false">Filtry kolumn</button>
-      <button class="secondary" type="button" id="clear-column-filters">Wyczyść filtry kolumn</button>
-      <button class="secondary" type="button" id="columns-open" aria-haspopup="dialog"
-        aria-controls="columns-dialog">Kolumny <span aria-hidden="true">⚙</span></button>
+      </div>
+      <div class="action-secondary" role="group" aria-label="Narzędzia tabeli">
+        <div class="action-group" role="group" aria-label="Operacje na zaznaczonych przesyłkach">
+          <button class="secondary" type="button" id="download-selected"
+            title="Pobierz gotowe potwierdzenia POD w archiwum ZIP">ZIP</button>
+          <button class="secondary" type="button" id="export-selected"
+            title="Zestawienie w Excelu dla zaznaczonych przesyłek">XLSX</button>
+          <button class="secondary" type="button" id="fba-selected"
+            title="Przypisz Shipment ID Amazon FBA do zaznaczonych przesyłek">FBA</button>
+        </div>
+        <div class="action-group action-group-retry" role="group" aria-label="Operacje UPS API">
+          <button class="secondary" type="button" id="retry-selected"
+            title="Ponownie odpytaj API UPS dla zaznaczonych przesyłek">PONÓW API</button>
+        </div>
+        <div class="action-group action-group-settings" role="group" aria-label="Widok i filtry">
+          <button class="secondary" type="button" id="clear-column-filters"
+            title="Wyczyść filtry kolumn, zakresu, miesiąca i wyszukiwania">WYCZYŚĆ FILTRY</button>
+          <button class="secondary" type="button" id="default-view"
+            title="Przywróć domyślne kolumny, ich kolejność i szerokości">DOMYŚLNY WIDOK</button>
+          <button class="secondary" type="button" id="columns-open" aria-haspopup="dialog"
+            aria-controls="columns-dialog" title="Wybierz widoczne kolumny">KOLUMNY</button>
+        </div>
       </div>
     </div>
     <div class="table-wrap">

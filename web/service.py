@@ -307,7 +307,7 @@ def stats() -> dict:
     today = dt.datetime.now(ZoneInfo("Europe/Warsaw"))
     year = str(today.year)
     month_keys = []
-    for shift in range(5, -1, -1):
+    for shift in range(11, -1, -1):
         index = today.year * 12 + today.month - 1 - shift
         month_keys.append(f"{index // 12:04d}-{index % 12 + 1:02d}")
     per_month = dict.fromkeys(month_keys, 0)
@@ -376,22 +376,22 @@ def available_months() -> list[str]:
 # A public-facing API schema can contain sensitive blobs; keys alone are not
 # an authorization to expose their values to every dashboard operator.
 UPS_EXTRA_COLUMNS = {
-    "ups.service": ("Usługa UPS", "shipment.service.description"),
-    "ups.pickup_date": ("Data odbioru wg UPS", "shipment.pickupDate"),
-    "ups.package_count": ("Liczba paczek", "shipment.packageCount"),
-    "ups.status_detail": ("Opis statusu UPS", "package.currentStatus.simplifiedTextDescription"),
-    "ups.status_code": ("Kod statusu UPS", "package.currentStatus.code"),
-    "ups.status_type": ("Typ zdarzenia UPS", "package.activity[0].status.type"),
-    "ups.event_code": ("Kod zdarzenia", "package.activity[0].status.code"),
-    "ups.event_status_code": ("Kod skanu", "package.activity[0].status.statusCode"),
-    "ups.activity_description": ("Ostatnia aktywność", "package.activity[0].status.description"),
-    "ups.activity_date": ("Data aktywności", "package.activity[0].date"),
-    "ups.activity_time": ("Czas aktywności", "package.activity[0].time"),
-    "ups.delivery_date_type": ("Typ daty dostawy", "package.deliveryDate[0].type"),
-    "ups.delivery_time_type": ("Typ czasu dostawy", "package.deliveryTime.type"),
-    "ups.delivery_start": ("Okno dostawy od", "package.deliveryTime.startTime"),
-    "ups.delivery_end": ("Okno dostawy do", "package.deliveryTime.endTime"),
-    "ups.weight_unit": ("Jednostka wagi", "package.weight.unitOfMeasurement"),
+    "ups.service": ("Rodzaj usługi UPS", "shipment.service.description"),
+    "ups.pickup_date": ("Data przejęcia przez UPS", "shipment.pickupDate"),
+    "ups.package_count": ("Liczba paczek w przesyłce", "shipment.packageCount"),
+    "ups.status_detail": ("Komunikat o statusie UPS", "package.currentStatus.simplifiedTextDescription"),
+    "ups.status_code": ("Kod aktualnego statusu UPS", "package.currentStatus.code"),
+    "ups.status_type": ("Kategoria ostatniego zdarzenia", "package.activity[0].status.type"),
+    "ups.event_code": ("Kod ostatniego zdarzenia", "package.activity[0].status.code"),
+    "ups.event_status_code": ("Kod skanu ostatniego zdarzenia", "package.activity[0].status.statusCode"),
+    "ups.activity_description": ("Opis ostatniego skanu", "package.activity[0].status.description"),
+    "ups.activity_date": ("Data ostatniego skanu", "package.activity[0].date"),
+    "ups.activity_time": ("Godzina ostatniego skanu", "package.activity[0].time"),
+    "ups.delivery_date_type": ("Rodzaj terminu doręczenia", "package.deliveryDate[0].type"),
+    "ups.delivery_time_type": ("Rodzaj przedziału doręczenia", "package.deliveryTime.type"),
+    "ups.delivery_start": ("Początek przedziału doręczenia", "package.deliveryTime.startTime"),
+    "ups.delivery_end": ("Koniec przedziału doręczenia", "package.deliveryTime.endTime"),
+    "ups.weight_unit": ("Jednostka masy paczki", "package.weight.unitOfMeasurement"),
 }
 
 # Client-visible fields are explicitly mapped to fixed SQL expressions.
@@ -457,9 +457,12 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 200,
     elif scope != "all":
         raise ValueError("Nieprawidłowy filtr.")
     if month and month != "all":
-        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
-            raise ValueError("Miesiąc musi mieć postać RRRR-MM.")
-        where.append("SUBSTR(COALESCE(NULLIF(ship_date,''),created_at),1,7)=?")
+        if re.fullmatch(r"\d{4}", month):
+            where.append("SUBSTR(COALESCE(NULLIF(ship_date,''),created_at),1,4)=?")
+        elif re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            where.append("SUBSTR(COALESCE(NULLIF(ship_date,''),created_at),1,7)=?")
+        else:
+            raise ValueError("Miesiąc lub rok musi mieć postać RRRR albo RRRR-MM.")
         params.append(month)
     if search:
         where.append("(tracking LIKE ? OR shipment_id LIKE ? OR description LIKE ? OR error LIKE ?)")

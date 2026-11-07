@@ -421,7 +421,9 @@ def test_browser_shift_checkbox_bulk_fba_branding_and_status_pills(application):
             page.locator("#rows input[type=checkbox]").nth(0).check()
             page.locator("#rows input[type=checkbox]").nth(5).click(modifiers=["Shift"])
             expect(page.locator("#rows input[type=checkbox]:checked")).to_have_count(6)
-            expect(page.locator("#fba-selected")).to_contain_text("(6)")
+            expect(page.locator("#fba-selected")).to_have_text("FBA")
+            expect(page.locator("#fba-selected")).to_have_attribute(
+                "title", "Przypisz Shipment ID dla 6 wybranych przesyłek.")
             page.locator("#fba-selected").click()
             expect(page.locator("#fba-dialog")).to_be_visible()
             page.locator("#fba-dialog-id").fill("FBA1234567")
@@ -710,12 +712,12 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
             expect(page.locator("#rows tr")).to_have_count(3)
             header = page.locator("#shipments-table thead tr:first-child")
             page.locator("#columns-open").click()
-            page.locator('#columns-picker input[type="checkbox"]').nth(4).check()
+            page.locator(".column-choice").filter(has_text="Waga").locator("input").check()
             page.locator("#columns-done").click()
             page.locator('.column-header[data-col="weight"] .sort-header').click()
             expect(page.locator('#rows tr').first).to_have_attribute("data-tracking", b)
             page.locator("#columns-open").click()
-            page.locator('#columns-picker input[type="checkbox"]').nth(4).check()
+            page.locator(".column-choice").filter(has_text="Waga").locator("input").check()
             page.locator("#columns-done").click()
             page.locator('.column-header[data-col="weight"] .sort-header').click()
             expect(page.locator('#rows tr').first).to_have_attribute("data-tracking", a)
@@ -934,7 +936,7 @@ def test_theme_and_configurable_columns_browser(application):
             expect(page.locator("#columns-dialog")).to_be_visible()
             # Match checkbox by row label: available Tracking API keys.
             service_field = page.locator('.column-choice').filter(
-                has_text="Usługa UPS"
+                has_text="Rodzaj usługi UPS"
             ).locator('input[type="checkbox"]')
             service_field.check()
             page.locator("#columns-done").click()
@@ -1128,7 +1130,9 @@ def test_config_tab_plain_dates_and_mixed_zip_browser(application):
 
             page.locator(f'#rows tr[data-tracking="{ready_number}"] input[type=checkbox]').check()
             expect(page.locator("#download-selected")).to_be_enabled()
-            expect(page.locator("#download-selected")).to_contain_text("1 PDF / 2 wybranych")
+            expect(page.locator("#download-selected")).to_have_text("ZIP")
+            expect(page.locator("#download-selected")).to_have_attribute(
+                "title", "Pobierz 1 gotowych POD w ZIP (z 2 wybranych).")
             with page.expect_download() as download_info:
                 page.locator("#download-selected").click()
             download = download_info.value
@@ -1279,7 +1283,7 @@ def test_polish_ups_statuses_and_monthly_pending_statistics(application):
     assert stats["on_way_or_rescheduled"] == 2
     buckets = {x["month"]: x["pending"] for x in stats["pending_months"]}
     assert buckets[current_month] == 2 and buckets[previous] == 2
-    assert len(buckets) == 6
+    assert len(buckets) == 12
     a = service.list_numbers(column_filters={"ups_status": "opóźniona"})
     assert a["total"] == 2
     labels = {r["tracking"]: r for r in a["rows"]}
@@ -1373,7 +1377,7 @@ def test_selection_column_fixed_icons_polish_and_full_width(application):
                 assert page.locator("#rows tr .fba-cell input").count() == 0
                 assert page.locator("#count-delayed").text_content() == "2"
                 assert page.locator("#count-pending-year").text_content() == "3"
-                assert page.locator("#pending-months .month-count").count() == 6
+                assert page.locator("#pending-months .month-count").count() == 13
                 if width >= 1200:
                     dimensions = page.evaluate("""() => {
                         const wrap = document.querySelector('#shipments-panel .table-wrap');
@@ -1616,6 +1620,136 @@ def test_full_width_24_columns_filter_visibility_resizer_and_xlsx_browser(applic
                         page.locator("#export-selected").click()
                     assert download_info.value.suggested_filename.endswith(".xlsx")
                 ctx.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_year_month_filter_with_twelve_month_pending_counts(application):
+    import datetime as dt
+    import service
+    from zoneinfo import ZoneInfo
+
+    now = dt.datetime.now(ZoneInfo("Europe/Warsaw"))
+    year = now.year
+    month_now = now.strftime("%Y-%m")
+    month_prior = (now.replace(day=1) - dt.timedelta(days=1)).strftime("%Y-%m")
+    prior_year = f"{year - 1}-12"
+    a, b, c, d = ("1Z004R316807294692", "1Z004R316805636772",
+                  "1Z004R316805433991", "1Z004R316837162143")
+    service.add_numbers(" ".join([a,b,c,d]))
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET state='retry',ship_date=? WHERE tracking=?",
+                   (month_now + "-04", a))
+        db.execute("UPDATE shipments SET state='retry',ship_date=? WHERE tracking=?",
+                   (month_prior + "-08", b))
+        db.execute("UPDATE shipments SET state='retry',ship_date=? WHERE tracking=?",
+                   (prior_year + "-05", c))
+        db.execute("UPDATE shipments SET state='ready',ship_date=? WHERE tracking=?",
+                   (month_now + "-03", d))
+    stats = service.stats()
+    assert len(stats["pending_months"]) == 12
+    assert stats["pending_months"][-1]["month"] == month_now
+    assert stats["pending_months"][-1]["pending"] == 1
+    assert stats["pending_year"] == 2
+    current_year = service.list_numbers(month=str(year), scope="missing")
+    assert current_year["total"] == 2
+    assert {r["tracking"] for r in current_year["rows"]} == {a,b}
+    assert service.list_numbers(month=month_now, scope="missing")["total"] == 1
+    assert service.list_numbers(month=month_now, scope="all")["total"] == 2
+    with application.test_client() as client:
+        response = client.get(f"/api/shipments?month={year}&scope=missing")
+        assert response.status_code == 200
+        assert response.json["total"] == 2
+        assert len(response.json["stats"]["pending_months"]) == 12
+        assert client.get("/api/shipments?month=2026-13").status_code == 400
+
+
+def test_month_buttons_tool_groups_reset_and_column_picker(application):
+    import datetime as dt
+    import service
+    from zoneinfo import ZoneInfo
+
+    now = dt.datetime.now(ZoneInfo("Europe/Warsaw"))
+    month = now.strftime("%Y-%m")
+    year = str(now.year)
+    numbers = ["1Z" + f"{index:016d}" for index in range(5, 8)]
+    service.add_numbers(" ".join(numbers))
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET state='retry',ship_date=?,ups_status='On the Way', "
+                   "ups_status_code='I' WHERE tracking=?", (month + "-07", numbers[0]))
+        db.execute("UPDATE shipments SET state='ready',ship_date=?,ups_status='Delivered' "
+                   "WHERE tracking=?", (month + "-08", numbers[1]))
+        db.execute("UPDATE shipments SET state='retry',ship_date=?,ups_status='Delayed' "
+                   "WHERE tracking=?", (f"{now.year-1}-12-10", numbers[2]))
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            for width in [1440, 390]:
+                context = browser.new_context(viewport={"width":width,"height":850})
+                context.add_cookies([{"name":"ups_pod_month", "value":"all",
+                    "url":f"http://127.0.0.1:{server.server_port}"}])
+                page = context.new_page()
+                page.goto(f"http://127.0.0.1:{server.server_port}")
+                expect(page.locator("#rows tr")).to_have_count(3)
+                month_buttons = page.locator("#pending-months button.month-count")
+                expect(month_buttons).to_have_count(13)
+                expect(page.locator("#pending-months button").last).to_have_attribute(
+                    "data-month", year)
+                assert page.locator("#pending-months").evaluate(
+                    "(x)=> x.scrollWidth <= x.clientWidth + 2")
+                assert page.locator("#download-all").count() == 0
+                labels = [page.locator("#"+name).text_content() for name in
+                    ("download-selected","export-selected","fba-selected",
+                     "retry-selected","clear-column-filters","default-view","columns-open")]
+                assert labels == ["ZIP","XLSX","FBA","PONÓW API",
+                    "WYCZYŚĆ FILTRY","DOMYŚLNY WIDOK","KOLUMNY"]
+                assert page.locator(".action-secondary .action-group").count() == 3
+                assert page.locator(".action-secondary .action-group-retry button").count() == 1
+                expect(page.locator("#column-filter-row")).to_be_hidden()
+                expect(page.locator(f'#rows tr[data-tracking="{numbers[0]}"] .document-waiting-icon')).to_have_attribute(
+                    "aria-label", "Brak PDF. Otwórz dziennik operacji przesyłki " + numbers[0])
+
+                page.locator(f'#pending-months button[data-month="{month}"]').click()
+                expect(page.locator("#rows tr")).to_have_count(1)
+                expect(page.locator("#month-filter")).to_have_value(month)
+                expect(page.locator('[data-scope="missing"]')).to_have_class("filter active")
+                expect(page.locator(f'#pending-months button[data-month="{month}"]')).to_have_attribute("aria-pressed","true")
+                page.reload()
+                expect(page.locator("#month-filter")).to_have_value(month)
+                expect(page.locator("#rows tr")).to_have_count(1)
+                page.locator(f'#pending-months button[data-month="{year}"]').click()
+                expect(page.locator("#month-filter")).to_have_value(year)
+                expect(page.locator("#rows tr")).to_have_count(1)
+                page.locator("#clear-column-filters").click()
+                expect(page.locator("#month-filter")).to_have_value("all")
+                expect(page.locator("#rows tr")).to_have_count(3)
+                expect(page.locator('[data-scope="all"]')).to_have_class("filter active")
+                page.locator("#columns-open").click()
+                picker = page.locator("#columns-picker")
+                assert picker.locator("small").count() == 0
+                assert picker.locator("h3").all_text_contents() == [
+                    "Podstawowe","Dodatkowe dane UPS Tracking API"]
+                choice = picker.locator(".column-choice").filter(has_text="Koniec przedziału doręczenia")
+                expect(choice).to_have_attribute("title",
+                    "Źródło danych w UPS Tracking API: package.deliveryTime.endTime")
+                weight = picker.locator(".column-choice").filter(has_text="Waga")
+                assert weight.count() == 1
+                assert weight.evaluate("(el)=> {let n=el.previousElementSibling; while(n && n.tagName!=='H3') n=n.previousElementSibling; return n?.textContent?.trim() }") == "Dodatkowe dane UPS Tracking API"
+                page.locator("#columns-done").click()
+                page.locator('.column-header[data-col="fba"] .column-grip').focus()
+                page.keyboard.press("Alt+ArrowRight")
+                expect(page.locator("#shipments-table thead tr:first-child th").nth(2)).to_have_attribute("data-col","fba")
+                page.locator("#default-view").click()
+                expect(page.locator("#shipments-table thead tr:first-child th").nth(1)).to_have_attribute("data-col","fba")
+                expect(page.locator('.column-header[data-col="weight"]')).to_be_hidden()
+                assert page.evaluate(
+                    "document.documentElement.scrollWidth <= window.innerWidth + 1")
+                context.close()
             browser.close()
     finally:
         server.shutdown()
