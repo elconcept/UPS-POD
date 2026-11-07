@@ -52,7 +52,7 @@ function renderRows() {
   tbody.replaceChildren();
   if (!rows.length) {
     const tr = document.createElement("tr");
-    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = 12;
+    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = 9;
     tbody.append(tr);
   }
   for (const row of rows) {
@@ -151,28 +151,6 @@ function renderRows() {
       doc.append(bubble);
     }
     tr.append(doc);
-    const photoCell = document.createElement("td");
-    if (row.photo_filename) {
-      const photo = document.createElement("img");
-      photo.src = "/api/shipments/" + encodeURIComponent(row.tracking) + "/photo";
-      photo.alt = "Zdjęcie doręczenia UPS";
-      photo.className = "delivery-thumb";
-      photo.loading = "lazy";
-      photo.title = "Kliknij, aby otworzyć zdjęcie doręczenia";
-      const a = document.createElement("a");
-      a.href = photo.src;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.append(photo);
-      photoCell.append(a);
-    } else {
-      const missing = document.createElement("span");
-      missing.className = "muted photo-empty";
-      missing.textContent = "—";
-      missing.title = "UPS nie udostępnił zdjęcia doręczenia";
-      photoCell.append(missing);
-    }
-    tr.append(photoCell);
     const weightLabel = row.weight_value
       ? row.weight_value + " " + (row.weight_unit === "KGS" ? "kg"
         : row.weight_unit === "LBS" ? "lb" : row.weight_unit) : "—";
@@ -193,7 +171,6 @@ function renderRows() {
     dateCell.title = row.delivery_date_type === "DEL" ? "Potwierdzona data doręczenia"
       : row.delivery_date_type === "SDD" ? "Planowana data dostawy (SDD)"
       : row.delivery_date_type || "Brak informacji";
-    addCell(tr, row.received_by || "—", "receiver-cell");
     tbody.append(tr);
   }
   $("page-info").textContent = total
@@ -268,10 +245,10 @@ $("intake-form").addEventListener("submit", async (event) => {
       body: JSON.stringify({ trackings: raw }),
     });
     notice("Dodano " + result.added + ", istniejące: " + result.existing
-      + ", przypisano FBA: " + result.assigned
-      + ", odrzucone fragmenty: " + result.rejected_count
+      + ", przypisano FBA: " + result.changed
+      + ", pominięte fragmenty: " + result.rejected_count
       + (result.rejected.length ? " (" + result.rejected.slice(0, 8).join(", ") + ")" : "")
-      + ". Pobieranie odbywa się automatycznie.", result.rejected_count > 0);
+      + ". Pobieranie odbywa się automatycznie.");
     $("trackings").value = "";
     offset = 0;
     await refresh();
