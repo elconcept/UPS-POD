@@ -96,6 +96,7 @@ def process_one(number: str, client: core.KlientUPS) -> str:
         detail = core.analizuj(code, json_body, text)
         if isinstance(json_body, dict):
             service.save_tracking_fields(json_body)
+            service.save_tracking_metadata(number, json_body)
         if detail['ok']:
             service.save_tracking_detail(number, detail)
         service.audit("worker", "tracking_result", number, code,
@@ -237,7 +238,8 @@ def main() -> None:
                     backfill_attempted = True
                     with service.connection() as db:
                         pending = [r[0] for r in db.execute(
-                            "SELECT tracking FROM shipments WHERE state='ready' AND ups_status='' LIMIT 100"
+                            "SELECT tracking FROM shipments WHERE state IN ('ready','retry') "
+                            "AND metadata_at='' LIMIT 100"
                         )]
                     for tracking in pending:
                         try:
@@ -245,6 +247,7 @@ def main() -> None:
                             detail = core.analizuj(code, payload, raw_text)
                             if isinstance(payload, dict):
                                 service.save_tracking_fields(payload)
+                                service.save_tracking_metadata(tracking, payload)
                             if detail['ok']:
                                 service.save_tracking_detail(tracking, detail)
                                 service.audit("worker", "metadata_backfill", tracking, code)
