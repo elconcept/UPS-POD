@@ -400,15 +400,21 @@ def audit(actor: str, operation: str, tracking: str = "", http_status: int | Non
                                            safe_description(description), audit_level(operation, http_status)))
 
 
-def audit_rows(after: int = 0, before: int = 0, levels: list[str] | None = None) -> list[dict]:
+def audit_rows(after: int = 0, before: int = 0, levels: list[str] | None = None,
+               tracking: str = "") -> list[dict]:
     levels = levels or []
     if any(x not in {"INFO", "SUCCESS", "WARNING", "ERROR"} for x in levels):
         raise ValueError("Nieprawidłowy poziom logów.")
     extra = " AND level IN (" + ",".join("?" for _ in levels) + ")" if levels else ""
+    if tracking:
+        if not NUMBER.fullmatch(tracking):
+            raise ValueError("Nieprawidłowy tracking w filtrze logów.")
+        extra += " AND tracking=?"
     with connection() as db:
         return [dict(row) for row in db.execute(
             "SELECT * FROM audit WHERE id>? AND (?=0 OR id<?)" + extra +
-            " ORDER BY id DESC LIMIT 200", (after, before, before, *levels))]
+            " ORDER BY id DESC LIMIT 200", (after, before, before, *levels,
+                                           *([tracking] if tracking else [])))]
 
 
 def parse_fba_text(raw: str) -> list[dict]:
