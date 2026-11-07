@@ -50,6 +50,10 @@ def init_db() -> None:
               sha256 TEXT
             )"""
         )
+        db.execute("""CREATE TABLE IF NOT EXISTS audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+            actor TEXT NOT NULL, operation TEXT NOT NULL, tracking TEXT NOT NULL DEFAULT '',
+            http_status INTEGER, description TEXT NOT NULL DEFAULT '')""")
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_due ON shipments(state, next_attempt_at)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_created ON shipments(created_at)")
 
@@ -63,20 +67,11 @@ def recover_in_progress() -> int:
 
 
 def parse_tracking_numbers(raw: str) -> tuple[list[str], list[str]]:
-    """Spaces, tabs, line breaks, comma and semicolon are equivalent delimiters."""
-    numbers = []
-    rejected = []
-    seen = set()
-    for raw_token in re.split(r"[\s,;]+", raw or ""):
-        token = raw_token.strip().upper()
-        if not token:
-            continue
-        if not NUMBER.fullmatch(token) or (token.startswith("1Z") and len(token) != 18):
-            rejected.append(token[:80])
-        elif token not in seen:
-            seen.add(token)
-            numbers.append(token)
-    return numbers, rejected
+    """Extract UPS identifiers from pasted cells, prose, quotes and punctuation."""
+    pattern = r"(?<![A-Z0-9])(?:1Z[A-Z0-9]{16}|T[0-9]{10}|[0-9]{12}|[0-9]{9})(?![A-Z0-9])"
+    normalized = (raw or "").upper().replace("\u200b", "").replace("\ufeff", "")
+    numbers = list(dict.fromkeys(re.findall(pattern, normalized)))
+    return numbers, []
 
 
 def add_numbers(raw: str) -> dict:
@@ -94,6 +89,7 @@ def add_numbers(raw: str) -> dict:
                 "VALUES(?, 'queued', ?, ?, ?)", (number, now, now, now)
             )
             inserted += cursor.rowcount
+    audit("user", "import", description=f"Dodano {inserted}; istniejące {len(numbers)-inserted}.")
     return {
         "added": inserted,
         "existing": len(numbers) - inserted,
@@ -181,8 +177,10 @@ def mark_retry(number: str, error: str, description: str = "", delay_hours: floa
         db.execute(
             "UPDATE shipments SET state='retry',description=?,error=?,updated_at=?,"
             "next_attempt_at=? WHERE tracking=?",
-            (description[:500], error[:800], utcnow(), next_time, number),
+            (safe_description(description)[:500], safe_description(error)[:800], utcnow(), next_time, number),
         )
+
+    audit("worker", "retry_scheduled", number, description=f"{error}; kolejna próba {next_time}")
 
 
 def retry_now(numbers: list[str]) -> int:
@@ -234,3 +232,26 @@ def ready_paths(numbers: list[str] | None, max_count: int = 1000) -> list[tuple[
                 if file.read(4) == b"%PDF":
                     result.append((row["tracking"], path))
     return result
+
+
+def safe_description(value: str) -> str:
+    value = str(value)
+    for key, secret in os.environ.items():
+        if secret and len(secret) > 3 and any(x in key.lower() for x in ("secret", "token", "client_id")):
+            value = value.replace(secret, "[ukryte]")
+    return re.sub(r"[\x00-\x1f\x7f]", " ", value)[:1000]
+
+
+def audit(actor: str, operation: str, tracking: str = "", http_status: int | None = None,
+          description: str = "") -> None:
+    with connection() as db:
+        db.execute("INSERT INTO audit(created_at,actor,operation,tracking,http_status,description) "
+                   "VALUES(?,?,?,?,?,?)", (utcnow(), actor, operation, tracking, http_status,
+                                           safe_description(description)))
+
+
+def audit_rows(after: int = 0, before: int = 0) -> list[dict]:
+    with connection() as db:
+        return [dict(row) for row in db.execute(
+            "SELECT * FROM audit WHERE id>? AND (?=0 OR id<?) ORDER BY id DESC LIMIT 200",
+            (after, before, before))]

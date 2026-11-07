@@ -1,4 +1,6 @@
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
+ARG REVISION=unknown
+LABEL org.opencontainers.image.revision=$REVISION
 WORKDIR /app
 COPY requirements-web.txt /app/
 RUN python -m pip install --no-cache-dir -r requirements-web.txt

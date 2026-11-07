@@ -21,6 +21,14 @@
   {% if not credentials %}
     <div class="alert warning" role="alert">Brak danych UPS w pliku <code>.env</code>. Nowe numery zostaną zapisane, a przetwarzanie rozpocznie się po konfiguracji i restarcie kontenerów.</div>
   {% endif %}
+  <nav aria-label="Zakładki"><button id="tab-shipments" type="button">Przesyłki</button>
+  <button id="tab-logs" type="button">Logi</button></nav>
+  <section id="logs-panel" class="panel" hidden><h2>Dziennik operacji</h2>
+  <p id="logs-status" role="status"></p>
+  <div class="table-wrap"><table><thead><tr><th>Czas</th><th>Wykonawca</th><th>Operacja</th>
+  <th>Numer UPS</th><th>HTTP</th><th>Opis</th></tr></thead><tbody id="log-rows"></tbody></table></div>
+  <button id="logs-older" type="button">Starsze wpisy</button></section>
+  <div id="shipments-panel">
   <section class="stats" aria-label="Stan kolejki">
     <article class="stat"><div>Wszystkie numery</div><strong id="count-total">—</strong></article>
     <article class="stat good"><div>Potwierdzenia pobrane</div><strong id="count-ready">—</strong></article>
@@ -66,6 +74,7 @@
       <div><button class="secondary" type="button" id="prev-page">Poprzednia</button><button class="secondary" type="button" id="next-page">Następna</button></div>
     </footer>
   </section>
+  </div>
   <footer class="page-footer">UPS Tracking API · kolejka sekwencyjna · ponowienie nieudanych prób co 3 godziny · oryginały POD i PDF przechowywane na Synology</footer>
 </main>
 </body>

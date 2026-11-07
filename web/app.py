@@ -115,6 +115,15 @@ def create_app(testing: bool = False) -> Flask:
             abort(400, str(exc))
         return jsonify(result), 201 if result["added"] else 200
 
+    @web.get("/api/logs")
+    def logs():
+        try:
+            after = max(0, int(request.args.get("after", 0)))
+            before = max(0, int(request.args.get("before", 0)))
+        except ValueError:
+            abort(400, "Nieprawidłowy kursor.")
+        return jsonify(items=service.audit_rows(after, before))
+
     @web.post("/api/retry")
     def retry():
         data = request.get_json(silent=True) or {}
@@ -125,6 +134,7 @@ def create_app(testing: bool = False) -> Flask:
             count = service.retry_now(numbers)
         except ValueError as exc:
             abort(400, str(exc))
+        service.audit("user", "retry", description=f"Ponowiono {count}.")
         return jsonify(requeued=count)
 
     @web.get("/api/shipments/<tracking>/pdf")
@@ -134,6 +144,7 @@ def create_app(testing: bool = False) -> Flask:
         matching = service.ready_paths([tracking])
         if not matching:
             abort(404, "Brak dokumentu PDF dla tego numeru.")
+        service.audit("user", "download_pdf", tracking)
         return send_file(matching[0][1], mimetype="application/pdf",
                          as_attachment=True, download_name=f"{tracking}_POD.pdf")
 
@@ -159,6 +170,7 @@ def create_app(testing: bool = False) -> Flask:
                              allowZip64=True) as archive:
             for tracking, path in paths:
                 archive.write(path, arcname=f"{tracking}_POD.pdf")
+        service.audit("user", "download_zip", description=f"Dokumentów {len(paths)}.")
         stream.seek(0)
         return send_file(stream, mimetype="application/zip", as_attachment=True,
                          download_name="ups-pod-potwierdzenia.zip")

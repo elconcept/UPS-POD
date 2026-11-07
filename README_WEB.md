@@ -68,3 +68,29 @@ python -m pytest -q tests_web -v
 ## Bezpieczeństwo i WDT
 
 Nie ujawniaj sekretów ani odpowiedzi UPS zawierających dane osobowe. Cloudflare Access chroni cały host; API ma dodatkowo ścisłe Host/Origin, CSRF i CSP. Oryginał dokumentu UPS zachowuj razem z fakturą i specyfikacją towarów — aplikacja gromadzi dokumenty przewoźnika, a nie rozstrzyga samodzielnie warunków stawki VAT 0%.
+
+## CI/CD i dziennik operacji
+
+Workflow `web-ci.yml` uruchamia Ruff oraz testy przeglądarkowe z rzeczywistym
+produkcyjnym API UPS. Wymaga sekretów GitHub `UPS_ENV` (zawartość konfiguracji UPS)
+i `UPS_E2E_TRACKING` (doręczona przesyłka z dostępnym POD). Brak konfiguracji albo
+brak rzeczywistego POD powoduje błąd testu. Test korzysta z osobnej tymczasowej
+bazy i pobiera nowy dokument, bez produkcyjnego cache i bez symulatora.
+
+Dopiero powodzenie zadania `quality` na `main` uruchamia `deploy`, który wywołuje
+istniejący hook `https://deploy.xlap.pl/deploy/elconcept/UPS-POD`.
+Sekrety `DEPLOY_CF_CLIENT_ID`, `DEPLOY_CF_CLIENT_SECRET`, `DEPLOY_TOKEN` pozostają
+w GitHub Secrets. Hook pobiera repo przez klucz deploy tylko do odczytu,
+uruchamia `deploy.sh` i czeka na gotowość kontenerów. Kod na NAS jest w
+`/volume2/docker/ups-pod/repo`, a trwała baza, POD i `.env` pozostają w katalogu
+nadrzędnym. Obraz zawiera etykietę rewizji Git.
+
+Zakładka Logi odczytuje trwałą tabelę `audit` w tej samej bazie SQLite. Zapisuje
+importy, pobrania PDF/ZIP, ręczne ponowienia, start workera, zapytania i odpowiedzi
+HTTP OAuth/Tracking, statusy HTTP, wyniki analizy oraz terminy ponownych prób.
+Nie zapisuje nagłówków uwierzytelnienia, tokenów ani pełnych odpowiedzi UPS.
+Błędy odpowiedzi są ograniczone do kodów maszynowych. Widok korzysta z `textContent`.
+Przesyłki i bieżące logi odświeżają się co 7 sekund przez AJAX. Starsze logi mają
+paginację. Parser wyodrębnia formaty UPS 1Z (18 znaków), T (11 znaków), 9 i 12 cyfr,
+ignoruje pozostały tekst i usuwa duplikaty. Klucz główny SQLite wymusza unikalność
+również przy równoczesnych importach.

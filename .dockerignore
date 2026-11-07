@@ -15,3 +15,6 @@ build/
 dist/
 testy/
 tests_web/
+
+work/
+.venv/

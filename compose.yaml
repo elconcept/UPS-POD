@@ -2,7 +2,7 @@ name: ups-pod
 services:
   web:
     build:
-      context: /volume2/docker/ups-pod
+      context: .
       dockerfile: Dockerfile
     image: ups-pod-web:local
     container_name: ups-pod-web
