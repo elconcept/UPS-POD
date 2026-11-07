@@ -34,3 +34,5 @@
 .tracking-fields summary{cursor:pointer;font-weight:650}
 .tracking-fields button{margin:9px 0}
 .tracking-fields pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;font-size:11px;line-height:1.55;background:#f6f8fb;padding:10px;border:1px solid #e4e9ee;border-radius:7px}
+
+.status.waiting{background:#fff5d6;color:#906916}.status.ups-status{font-size:11px;max-width:215px;overflow:hidden;text-overflow:ellipsis}.document-details{font-size:10px;color:#7a8797;margin-top:4px;line-height:1.45;white-space:normal}.retry-description{display:block;font-size:11px;color:#ba4141;margin-bottom:4px;max-width:310px}.inline-edit{margin-left:7px;background:transparent;border:1px solid #d9e3ec;color:#2a628b;font-size:10px;padding:3px 6px;border-radius:5px}.inline-edit:hover:not(:disabled){background:#edf5fc;color:#184c72}#logs-tracking{border:1px solid #cbd8e5;border-radius:8px;padding:7px 11px;margin:6px 0 13px;width:min(390px,100%);font-size:12px}td.fba-cell{white-space:nowrap}.fba-id{font-size:12px;font-weight:600}

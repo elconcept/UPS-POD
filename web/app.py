@@ -127,7 +127,10 @@ def create_app(testing: bool = False) -> Flask:
             abort(400, "Nieprawidłowy kursor.")
         levels = [x.strip().upper() for x in request.args.get("levels", "").split(",") if x.strip()]
         try:
-            return jsonify(items=service.audit_rows(after, before, levels))
+            tracking_filter = request.args.get("tracking", "").strip().upper()
+            if tracking_filter and not service.NUMBER.fullmatch(tracking_filter):
+                abort(400, "Nieprawidłowy numer UPS w filtrze logów.")
+            return jsonify(items=service.audit_rows(after, before, levels, tracking_filter))
         except ValueError as exc:
             abort(400, str(exc))
 
@@ -140,7 +143,10 @@ def create_app(testing: bool = False) -> Flask:
         data = request.get_json(silent=True) or {}
         try:
             if isinstance(data.get("text"), str):
-                entries = service.parse_fba_text(data["text"])
+                # Unified parser: a pasted sequence may also include UPS numbers
+                # without a preceding FBA, and existing UPS rows gain a new FBA.
+                result = service.add_numbers(data["text"])
+                return jsonify(result)
             else:
                 entries = data.get("entries")
             if not isinstance(entries, list):

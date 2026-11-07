@@ -83,6 +83,23 @@ def init_db() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS ix_audit_level_id ON audit(level,id)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_due ON shipments(state, next_attempt_at)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_shipments_created ON shipments(created_at)")
+    # Historical entries can predate the audit subsystem. Materialize missing
+    # audit events once, so no retry row is invisible in logs.
+    with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        missing = [dict(r) for r in db.execute(
+            "SELECT s.tracking,s.state,s.error,s.description,s.attempts FROM shipments s "
+            "WHERE s.state='retry' AND NOT EXISTS "
+            "(SELECT 1 FROM audit a WHERE a.tracking=s.tracking)")]
+        for record in missing:
+            op = ("awaiting_delivery" if record["error"] == "Przesyłka jeszcze niedoręczona."
+                  else "pod_retry_error")
+            desc = safe_description(
+                f"Odtworzona historia: {record['error']}; prób {record['attempts']}.")
+            db.execute("INSERT INTO audit(created_at,actor,operation,tracking,http_status,"
+                       "description,level) VALUES(?,?,?,?,?,?,?)",
+                       (utcnow(), "system", op, record["tracking"], None, desc,
+                        audit_level(op)))
     # Moving legacy PDFs is idempotent and guarded by SQLite BEGIN IMMEDIATE.
     # We retain old /data/pod copies as a rollback backup; active paths are only under /pod.
     with connection() as db:
@@ -110,27 +127,114 @@ def parse_tracking_numbers(raw: str) -> tuple[list[str], list[str]]:
     return numbers, []
 
 
+# Amazon's real-world FBA identifiers in existing data are twelve characters,
+# while the newly requested ten-character format is supported as well.
+# UPS standard 1Z identifiers have 18 characters (2+16); the suggested
+# 1Z004R31 + {11} would wrongly reject the user's real 18-character numbers.
+MIXED_TOKEN = re.compile(
+    r"(?<![A-Z0-9])(?:1Z[A-Z0-9]{16}|FBA[A-Z0-9]{7}(?:[A-Z0-9]{2})?)(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+FBA_HEADERS = {"SHIPMENT", "ID", "SHIPMENTID", "FBA", "UPS", "TRACKING", "TRACKINGS", "NUMERY", "NR", "LISTA", "DATA", "DATE"}
+
+
+def parse_mixed_text(raw: str) -> tuple[list[dict], list[str]]:
+    """Ordered scanner: FBA applies to following UPS numbers until the next FBA.
+
+    Accept arbitrary delimiters, pasted Excel cells with several UPS in one
+    cell, repeated FBA groups, and standalone UPS without assignment. Garbage
+    is ignored and surfaced as nonmodal warnings, never silently accepted.
+    """
+    normalized = (raw or "").upper().replace("\ufeff", " ").replace("\u200b", " ")
+    matches = list(MIXED_TOKEN.finditer(normalized))
+    assignments: list[dict] = []
+    rejected: list[str] = []
+    active_fba = ""
+    seen: dict[str, str] = {}
+    cursor = 0
+
+    def garbage(part: str) -> None:
+        for token in re.findall(r"[A-Z0-9]+", part):
+            if token not in FBA_HEADERS and token not in {"-", "I", "ORAZ"}:
+                rejected.append(token[:70])
+
+    for match in matches:
+        garbage(normalized[cursor:match.start()])
+        token = match.group().upper()
+        if token.startswith("FBA"):
+            if token != UNASSIGNED_FBA:
+                active_fba = token
+            else:
+                active_fba = ""
+        else:
+            if token in seen and seen[token] != active_fba and active_fba:
+                if seen[token]:
+                    raise ValueError(f"Sprzeczne Shipment ID dla {token}: {seen[token]} i {active_fba}.")
+                # Previously free-standing tracking gets the explicit FBA mapping.
+                seen[token] = active_fba
+            elif token not in seen:
+                seen[token] = active_fba
+        cursor = match.end()
+    garbage(normalized[cursor:])
+    for tracking, fba in seen.items():
+        assignments.append({"tracking": tracking, "shipment_id": fba, "ship_date": ""})
+    return assignments, rejected
+
+
 def add_numbers(raw: str) -> dict:
-    numbers, rejected = parse_tracking_numbers(raw)
-    if not numbers:
-        raise ValueError("Nie znaleziono poprawnych numerów UPS.")
-    if len(numbers) > MAX_BATCH:
+    parsed, rejected = parse_mixed_text(raw)
+    if not parsed:
+        raise ValueError("Nie znaleziono numerów UPS. Sprawdź format 1Z + 16 znaków.")
+    if len(parsed) > MAX_BATCH:
         raise ValueError(f"Limit jednorazowego importu: {MAX_BATCH} numerów.")
     inserted = 0
+    assigned = 0
+    changed = 0
     now = utcnow()
     with connection() as db:
-        for number in numbers:
+        db.execute("BEGIN IMMEDIATE")
+        # Validate the complete import before any insertion.
+        for row in parsed:
+            fba = row["shipment_id"]
+            if not fba:
+                continue
+            existing = db.execute("SELECT shipment_id FROM shipments WHERE tracking=?",
+                                  (row["tracking"],)).fetchone()
+            if existing and existing["shipment_id"] and existing["shipment_id"] != fba:
+                raise ValueError(f"Konflikt FBA dla {row['tracking']}: "
+                                 f"istnieje {existing['shipment_id']}, import zawiera {fba}.")
+        for row in parsed:
+            tracking, fba = row["tracking"], row["shipment_id"]
             cursor = db.execute(
                 "INSERT OR IGNORE INTO shipments(tracking,state,created_at,updated_at,next_attempt_at) "
-                "VALUES(?, 'queued', ?, ?, ?)", (number, now, now, now)
+                "VALUES(?, 'queued', ?, ?, ?)", (tracking, now, now, now),
             )
             inserted += cursor.rowcount
-    audit("user", "import", description=f"Dodano {inserted}; istniejące {len(numbers)-inserted}.")
+            if fba:
+                assigned += 1
+                cur = db.execute(
+                    "UPDATE shipments SET shipment_id=?,updated_at=? "
+                    "WHERE tracking=? AND shipment_id!=?",
+                    (fba, now, tracking, fba),
+                )
+                changed += cur.rowcount
+    for row in parsed:
+        if row["shipment_id"]:
+            sync_named_pdf(row["tracking"])
+    audit("user", "import", description=f"Dodano {inserted}, FBA {assigned}, "
+          f"uzupełniono {changed}, odrzucono fragmentów {len(rejected)}.")
+    for row in parsed:
+        audit("user", "shipment_imported", row["tracking"],
+              description=(f"Shipment ID {row['shipment_id']}" if row["shipment_id"]
+                           else "Dodano UPS bez Shipment ID."))
     return {
         "added": inserted,
-        "existing": len(numbers) - inserted,
-        "rejected": rejected[:100],
-        "submitted_unique": len(numbers),
+        "existing": len(parsed) - inserted,
+        "assigned": assigned,
+        "changed": changed,
+        "rejected": rejected[:30],
+        "rejected_count": len(rejected),
+        "submitted_unique": len(parsed),
     }
 
 
@@ -191,7 +295,8 @@ def claim_next() -> str | None:
             "last_attempt_at=?,updated_at=?,error='' WHERE tracking=?",
             (now, now, number),
         )
-        return number
+    audit("worker", "attempt_start", number, description="Zlecono pobranie z UPS.")
+    return number
 
 
 def mark_ready(number: str, description: str, delivered_at: str, pod_path: str,
@@ -218,7 +323,9 @@ def mark_retry(number: str, error: str, description: str = "", delay_hours: floa
             (safe_description(description)[:500], safe_description(error)[:800], utcnow(), next_time, number),
         )
 
-    audit("worker", "retry_scheduled", number, description=f"{error}; kolejna próba {next_time}")
+    operation = "awaiting_delivery" if error == "Przesyłka jeszcze niedoręczona." else "pod_retry_error"
+    audit("worker", operation, number,
+          description=f"{safe_description(error)}; następna próba {next_time}")
 
 
 def retry_now(numbers: list[str]) -> int:
@@ -281,7 +388,7 @@ def safe_description(value: str) -> str:
 
 
 def audit_level(operation: str, http_status: int | None = None) -> str:
-    if operation in {"ups_network_error", "credentials_missing"} or (http_status or 0) >= 500:
+    if operation in {"ups_network_error", "credentials_missing", "pod_retry_error", "pod_migration_error"} or (http_status or 0) >= 500:
         return "ERROR"
     if operation in {"retry_scheduled", "retry", "metadata_backfill_failed"} or 400 <= (http_status or 0) < 500:
         return "WARNING"
@@ -298,48 +405,29 @@ def audit(actor: str, operation: str, tracking: str = "", http_status: int | Non
                                            safe_description(description), audit_level(operation, http_status)))
 
 
-def audit_rows(after: int = 0, before: int = 0, levels: list[str] | None = None) -> list[dict]:
+def audit_rows(after: int = 0, before: int = 0, levels: list[str] | None = None,
+               tracking: str = "") -> list[dict]:
     levels = levels or []
     if any(x not in {"INFO", "SUCCESS", "WARNING", "ERROR"} for x in levels):
         raise ValueError("Nieprawidłowy poziom logów.")
     extra = " AND level IN (" + ",".join("?" for _ in levels) + ")" if levels else ""
+    if tracking:
+        if not NUMBER.fullmatch(tracking):
+            raise ValueError("Nieprawidłowy tracking w filtrze logów.")
+        extra += " AND tracking=?"
     with connection() as db:
         return [dict(row) for row in db.execute(
             "SELECT * FROM audit WHERE id>? AND (?=0 OR id<?)" + extra +
-            " ORDER BY id DESC LIMIT 200", (after, before, before, *levels))]
+            " ORDER BY id DESC LIMIT 200", (after, before, before, *levels,
+                                           *([tracking] if tracking else [])))]
 
 
 def parse_fba_text(raw: str) -> list[dict]:
-    """Paste two or three Excel columns: FBA | UPS list, or date | FBA | UPS list."""
-    assignments: list[dict] = []
-    for i, line in enumerate(raw.splitlines(), 1):
-        if not line.strip():
-            continue
-        cells = [x.strip() for x in line.split("\t")]
-        if len(cells) < 2:
-            cells = [x.strip() for x in re.split(r"\s{2,}", line.strip())]
-        if len(cells) < 2:
-            raise ValueError(f"Wiersz {i}: wymagane przynajmniej dwie kolumny (FBA i trackingi).")
-        if cells[0].lower() in {"data", "date", "ship date", "shipment id", "fba", "fba id"}:
-            continue
-        if len(cells) == 2:
-            shipment_id, raw_trackings = cells
-            ship_date = ""
-        elif cells[0].upper().startswith("FBA"):
-            shipment_id, ship_date = cells[:2]
-            raw_trackings = " ".join(cells[2:])
-        else:
-            ship_date, shipment_id = cells[:2]
-            raw_trackings = " ".join(cells[2:])
-        numbers, _ = parse_tracking_numbers(raw_trackings)
-        if not numbers:
-            raise ValueError(f"Wiersz {i}: brak poprawnych numerów UPS.")
-        for number in numbers:
-            assignments.append({"tracking": number, "shipment_id": shipment_id.upper(),
-                                "ship_date": ship_date})
-    if not assignments:
-        raise ValueError("Brak danych FBA do importu.")
-    return assignments
+    """Legacy caller: mixed Excel cells and ordered FBA+UPS streams."""
+    assignments, _warnings = parse_mixed_text(raw)
+    return [x for x in assignments if x["shipment_id"]]
+
+
 
 
 def assign_fba_rows(entries: list[dict], replace: bool = False) -> dict:
@@ -374,25 +462,31 @@ def assign_fba_rows(entries: list[dict], replace: bool = False) -> dict:
             if row and row["shipment_id"] and row["shipment_id"] != fba and not replace:
                 raise ValueError(f"Konflikt FBA dla {tracking}: istnieje {row['shipment_id']}.")
             if (date and row and row["ship_date"] and row["ship_date"] != date
-                    and row["shipment_id"] and not replace):
+                    and row["shipment_id"] and row["ship_date_source"] != "ups_pickup_date"
+                    and not replace):
                 raise ValueError(f"Konflikt daty dla {tracking}: istnieje {row['ship_date']}.")
             if not row:
                 db.execute("INSERT INTO shipments(tracking,created_at,updated_at,next_attempt_at) "
                            "VALUES(?,?,?,?)", (tracking, now, now, now))
-            final_date = date or (row["ship_date"] if row else "")
-            final_source = "manual" if date else (row["ship_date_source"] if row else "")
+            # An actual UPS pickupDate always wins over a historical operator date.
+            ups_known = row and row["ship_date_source"] == "ups_pickup_date"
+            final_date = (row["ship_date"] if ups_known else
+                          date or (row["ship_date"] if row else ""))
+            final_source = ("ups_pickup_date" if ups_known else
+                            "manual" if date else (row["ship_date_source"] if row else ""))
             if not row or row["shipment_id"] != fba or row["ship_date"] != final_date:
                 changed += 1
             db.execute("UPDATE shipments SET shipment_id=?,ship_date=?,ship_date_source=?,"
                        "updated_at=? WHERE tracking=?", (fba, final_date, final_source, now, tracking))
     for number in checked:
         sync_named_pdf(number)
+        audit("user", "fba_mapping", number, description="Przypisanie Shipment ID.")
     audit("user", "fba_mapping", description=f"Przypisano {len(checked)} numerów; zmieniono {changed}.")
     return {"assigned": len(checked), "changed": changed}
 
 
 def save_tracking_detail(tracking: str, detail: dict) -> None:
-    """Never overwrite a shipment date supplied by an operator."""
+    """Prefer UPS pickupDate whenever supplied; preserve date only if API has none."""
     status = str(detail.get("status") or "")[:150]
     code = str(detail.get("status_typ") or "")[:20]
     date = str(detail.get("ship_date") or "")
@@ -400,8 +494,8 @@ def save_tracking_detail(tracking: str, detail: dict) -> None:
     with connection() as db:
         db.execute(
             """UPDATE shipments SET ups_status=?,ups_status_code=?,
-               ship_date=CASE WHEN ship_date_source='manual' OR ?='' THEN ship_date ELSE ? END,
-               ship_date_source=CASE WHEN ship_date_source='manual' OR ?='' THEN ship_date_source ELSE ? END,
+               ship_date=CASE WHEN ?='' THEN ship_date ELSE ? END,
+               ship_date_source=CASE WHEN ?='' THEN ship_date_source ELSE ? END,
                updated_at=? WHERE tracking=?""",
             (status, code, date, date, date, source, utcnow(), tracking),
         )
