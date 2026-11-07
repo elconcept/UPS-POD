@@ -81,7 +81,10 @@ def create_app(testing: bool = False) -> Flask:
 
     @web.get("/healthz")
     def health():
-        return jsonify(status="ok", database=service.DB_PATH.is_file())
+                db_ok = service.DB_PATH.is_file()
+        pod_ok = service.DOCUMENTS_DIR.is_dir() and os.access(service.DOCUMENTS_DIR, os.W_OK)
+        return jsonify(status="ok" if db_ok and pod_ok else "degraded",
+                       database=db_ok, pod_archive_writable=pod_ok), 200 if db_ok and pod_ok else 503
 
     @web.get("/")
     def index():
