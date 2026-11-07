@@ -217,7 +217,7 @@ def create_app(testing: bool = False) -> Flask:
     @web.get("/api/shipments")
     def shipments():
         try:
-            limit = int(request.args.get("limit", 200))
+            limit = int(request.args.get("limit", 1500))
             offset = int(request.args.get("offset", 0))
             result = service.list_numbers(
                 request.args.get("q", ""), request.args.get("scope", "all"),

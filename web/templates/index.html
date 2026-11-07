@@ -145,17 +145,22 @@
   <th>Numer UPS</th><th>HTTP</th><th>Opis</th></tr></thead><tbody id="log-rows"></tbody></table></div>
   <button id="logs-older" type="button">Starsze wpisy</button></section>
   <div id="shipments-panel" role="tabpanel" aria-labelledby="tab-shipments">
-  <section class="stats" aria-label="Zestawienie przesyłek">
-    <article class="stat"><div>Wszystkie przesyłki</div><strong id="count-total">—</strong></article>
-    <article class="stat good"><div>POD pobrane</div><strong id="count-ready">—</strong></article>
-    <article class="stat"><div>Bez POD · <span id="stats-year">bieżący rok</span></div><strong id="count-pending-year">—</strong></article>
-    <article class="stat problem"><div>Opóźnione</div><strong id="count-delayed">—</strong></article>
-    <article class="stat"><div>W drodze / przełożone</div><strong id="count-onway">—</strong>
-      <span id="onway-breakdown" class="stat-detail" title="Nie obejmuje opóźnionych; rozłączne grupy">—</span></article>
-    <article class="stat"><div>Wszystkie bez POD</div><strong id="count-pending">—</strong></article>
+  <section class="stats" aria-label="Szybkie filtry przesyłek">
+    <article class="stat"><button class="stat-action" type="button" data-kpi="all"
+      title="Pokaż wszystkie przesyłki"><span>Wszystkie</span><strong id="count-total">—</strong></button></article>
+    <article class="stat good"><button class="stat-action" type="button" data-kpi="ready"
+      title="Pokaż przesyłki z pobranym POD"><span>POD pobrane</span><strong id="count-ready">—</strong></button></article>
+    <article class="stat"><button class="stat-action" type="button" data-kpi="pending-year"
+      title="Pokaż brakujące POD z bieżącego roku"><span>Bez POD · <span id="stats-year">rok</span></span><strong id="count-pending-year">—</strong></button></article>
+    <article class="stat problem"><button class="stat-action" type="button" data-kpi="delayed"
+      title="Pokaż opóźnione przesyłki bez POD"><span>Opóźnione</span><strong id="count-delayed">—</strong></button></article>
+    <article class="stat"><button class="stat-action" type="button" data-kpi="onway"
+      title="Pokaż przesyłki w drodze i przełożone bez POD"><span>W drodze / przełożone</span><strong id="count-onway">—</strong><span id="onway-breakdown" class="stat-detail">—</span></button></article>
+    <article class="stat"><button class="stat-action" type="button" data-kpi="missing"
+      title="Pokaż wszystkie brakujące POD"><span>Wszystkie bez POD</span><strong id="count-pending">—</strong></button></article>
   </section>
   <section class="pending-history" aria-label="Przesyłki bez POD w ostatnich dwunastu miesiącach i bieżącym roku">
-    <span class="pending-history-title">Bez POD według miesiąca nadania <span class="pending-history-help">— wybierz miesiąc lub rok, aby filtrować listę</span></span>
+    <span class="pending-history-title" title="Przesyłki bez potwierdzenia doręczenia w miesiącu nadania, kliknij okres, aby przefiltrować listę">Brak POD</span>
     <div id="pending-months" class="pending-months"><span>Ładowanie…</span></div>
   </section>
   <section class="panel intake" id="intake-panel">
@@ -185,45 +190,77 @@
       </div>
       <div class="month-control"><label class="month-label" for="month-filter">Miesiąc</label>
       <select id="month-filter" aria-label="Miesiąc nadania"><option value="all">Wszystkie miesiące</option></select></div>
-      <input type="search" id="query" placeholder="Szukaj numeru lub błędu…" aria-label="Szukaj" />
-      <button class="secondary" type="button" id="column-filters-toggle"
-        aria-controls="column-filter-row" aria-expanded="false">Filtry kolumn</button>
+      <input type="search" id="query" placeholder="SZUKAJ..." aria-label="Szukaj przesyłek" />
       </div>
       <div class="action-secondary" role="group" aria-label="Narzędzia tabeli">
-        <div class="action-group" role="group" aria-label="Operacje na zaznaczonych przesyłkach">
-          <button class="secondary" type="button" id="download-selected"
-            title="Pobierz gotowe potwierdzenia POD w archiwum ZIP">ZIP</button>
-          <button class="secondary" type="button" id="export-selected"
-            title="Zestawienie w Excelu dla zaznaczonych przesyłek">XLSX</button>
-          <button class="secondary" type="button" id="fba-selected"
-            title="Przypisz Shipment ID Amazon FBA do zaznaczonych przesyłek">FBA</button>
+        <div class="action-group action-group-files" role="group" aria-label="Dokumenty i FBA">
+          <button type="button" id="download-selected" class="secondary action-tint-zip"
+            title="Pobierz gotowe POD jako ZIP"><span class="action-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M5 2h10l5 5v15H5zM15 2v5h5M12 5v2m0 2v2m0 2v2M10 17h4v3h-4z"/></svg>
+            </span><span class="button-label">ZIP</span></button>
+          <button type="button" id="export-selected" class="secondary action-tint-xlsx"
+            title="Zestawienie zaznaczonych przesyłek w arkuszu XLSX"><span class="action-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 7h8M8 11h8M8 15h3m3 0h2"/></svg>
+            </span><span class="button-label">XLSX</span></button>
+          <button type="button" id="fba-selected" class="secondary action-tint-fba"
+            title="Przypisz Shipment ID Amazon FBA zaznaczonym przesyłkom"><span class="action-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M7 14V9a3 3 0 0 1 6 0v5m-6-2h6M4 18c4 3 10 3 15-1M17 16l2 1-1 2"/></svg>
+            </span><span class="button-label">FBA</span></button>
         </div>
-        <div class="action-group action-group-retry" role="group" aria-label="Operacje UPS API">
-          <button class="secondary" type="button" id="retry-selected"
-            title="Ponownie odpytaj API UPS dla zaznaczonych przesyłek">PONÓW API</button>
+        <span class="action-pipe" aria-hidden="true">│</span>
+        <div class="action-group action-group-filters" role="group" aria-label="Operacje i filtry">
+          <button type="button" id="retry-selected" class="secondary"
+            title="Ponów sprawdzenie wybranych przesyłek przez UPS API"><span class="button-label">PONÓW API</span></button>
+          <button type="button" id="column-filters-toggle" class="secondary"
+            aria-controls="column-filter-row" aria-expanded="false"
+            title="Rozwiń filtry poszczególnych kolumn"><span class="button-label">Pokaż filtry</span></button>
+          <button type="button" id="clear-column-filters" class="secondary"
+            title="Wyczyść wyszukiwanie, okres i wszystkie filtry"><span class="button-label">Wyczyść filtry</span></button>
         </div>
-        <div class="action-group action-group-settings" role="group" aria-label="Widok i filtry">
-          <button class="secondary" type="button" id="clear-column-filters"
-            title="Wyczyść filtry kolumn, zakresu, miesiąca i wyszukiwania">WYCZYŚĆ FILTRY</button>
-          <button class="secondary" type="button" id="default-view"
-            title="Przywróć domyślne kolumny, ich kolejność i szerokości">DOMYŚLNY WIDOK</button>
-          <button class="secondary" type="button" id="columns-open" aria-haspopup="dialog"
-            aria-controls="columns-dialog" title="Wybierz widoczne kolumny">KOLUMNY</button>
+        <span class="action-pipe" aria-hidden="true">│</span>
+        <div class="action-group action-group-settings" role="group" aria-label="Kolumny">
+          <button type="button" id="default-view" class="secondary"
+            title="Przywróć domyślne kolumny, kolejność i szerokości"><span class="button-label">Domyślny widok</span></button>
+          <button type="button" id="columns-open" class="secondary" aria-haspopup="dialog"
+            aria-controls="columns-dialog" title="Wybierz widoczne kolumny"><span class="button-label">Kolumny</span></button>
         </div>
       </div>
     </div>
+    <nav class="pagination pagination-top" aria-label="Paginacja nad tabelą">
+      <span id="page-info-top">—</span>
+      <div class="page-controls">
+        <label for="page-size-top">Na stronę</label>
+        <select id="page-size-top" aria-label="Liczba przesyłek na stronę">
+          <option>50</option><option>100</option><option>200</option><option>500</option>
+          <option>1000</option><option selected>1500</option><option>2000</option>
+        </select>
+        <button class="secondary" type="button" id="prev-page-top">← Poprzednia</button>
+        <button class="secondary" type="button" id="next-page-top">Następna →</button>
+      </div>
+    </nav>
     <div class="table-wrap">
       <table id="shipments-table">
         <thead><tr>
-          <th class="selection-header" scope="col" aria-label="Zaznacz przesyłki"><input type="checkbox" id="select-page" title="Zaznacz widoczne przesyłki" aria-label="Zaznacz wszystkie przesyłki na stronie"></th><th>Shipment ID</th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>Waga</th><th>Status UPS</th><th title="Stan API UPS i pobierania POD">API</th><th>Dokument</th>
+          <th class="selection-header" scope="col" aria-label="Zaznacz przesyłki"><input type="checkbox" id="select-page" title="Zaznacz widoczne przesyłki" aria-label="Zaznacz wszystkie przesyłki na stronie"></th><th>Shipment ID</th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>Waga</th><th>Status UPS</th><th>Dokument</th><th>Podgląd POD</th><th class="api-fixed-header" title="Stan UPS API" scope="col">API</th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="9" class="empty">Ładowanie przesyłek…</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="10" class="empty">Ładowanie przesyłek…</td></tr></tbody>
       </table>
     </div>
-    <footer class="pagination">
+    <nav class="pagination pagination-bottom" aria-label="Paginacja pod tabelą">
       <span id="page-info">—</span>
-      <div><button class="secondary" type="button" id="prev-page">Poprzednia</button><button class="secondary" type="button" id="next-page">Następna</button></div>
-    </footer>
+      <div class="page-controls">
+        <label for="page-size">Na stronę</label>
+        <select id="page-size" aria-label="Liczba przesyłek na stronę">
+          <option>50</option><option>100</option><option>200</option><option>500</option>
+          <option>1000</option><option selected>1500</option><option>2000</option>
+        </select>
+        <button class="secondary" type="button" id="prev-page">← Poprzednia</button>
+        <button class="secondary" type="button" id="next-page">Następna →</button>
+      </div>
+    </nav>
   </section>
   </div>
   <dialog id="columns-dialog" class="data-dialog columns-dialog"

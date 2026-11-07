@@ -468,3 +468,160 @@ button.document-bubble.document-waiting-icon:hover:not(:disabled){
   .action-group-settings{margin-left:0}
   .action-group+.action-group{border-left:0;padding-left:0}
 }
+
+/* V7: Compact interactive global KPIs and twelve-month navigation */
+.stats{grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:5px!important;margin-bottom:7px!important}
+.stats .stat{border-radius:8px!important;padding:0!important;min-height:35px!important;
+  box-shadow:none!important;overflow:hidden;position:relative}
+.stats .stat:has(.stat-detail){padding-bottom:0!important}
+.stats .stat .stat-action{width:100%;height:100%;min-height:37px;display:flex;align-items:center;
+  justify-content:space-between;position:relative;gap:5px;text-align:left;
+  background:transparent!important;color:var(--ui-text)!important;border:1px solid transparent!important;
+  box-shadow:none!important;border-radius:7px!important;padding:5px 8px!important;
+  font-size:10px!important;line-height:1.1!important;font-weight:650!important}
+.stats .stat .stat-action > span:not(.stat-detail){color:var(--ui-muted);min-width:0}
+.stats .stat .stat-action strong{margin:0!important;display:inline!important;flex:none;
+  font-size:18px!important;line-height:1!important;font-variant-numeric:tabular-nums}
+.stats .stat .stat-action .stat-detail{position:static!important;display:none!important}
+.stats .stat .stat-action:hover,.stats .stat .stat-action:focus-visible{
+  background:var(--ui-hover)!important;outline:0;border-color:var(--ui-border)!important}
+.stats .stat .stat-action:focus-visible{outline:2px solid var(--ui-focus)!important;outline-offset:-2px}
+.stats .stat .stat-action.active{background:var(--ui-select)!important;
+  border-color:var(--ui-accent)!important}
+.pending-history{padding:5px 9px!important;gap:4px!important;margin-bottom:7px!important}
+.pending-history-title{font-size:10px!important}
+.pending-history-help{font-size:9px!important}
+.pending-months{gap:3px!important}
+.pending-months button.month-count{min-height:25px!important;padding:3px 2px!important;
+  border-radius:5px!important;font-size:9px!important}
+.pending-months button.month-count strong{font-size:10px!important}
+.pending-months button.month-count.active{padding:2px 1px!important}
+
+/* One-row group toolbars, each group shrinks proportionally. */
+.actions{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;
+  align-items:center!important;gap:6px!important;margin-bottom:8px!important}
+.actions .action-main{display:flex!important;flex-wrap:nowrap!important;flex:1 1 auto!important;
+  min-width:0!important;gap:4px!important}
+.actions .action-main .filters{flex:0 1 auto;min-width:0}
+.actions .action-main .filters button{font-size:10px;padding:5px 5px;min-height:27px}
+.actions .action-main .month-control{flex:0 1 auto;min-width:0;gap:3px}
+.actions .action-main .month-label{font-size:9px}
+.actions #month-filter{max-width:128px;min-width:55px;padding:5px 5px;font-size:10px;
+  text-overflow:ellipsis}
+.actions #query{flex:1 1 74px;min-width:46px;width:100%;padding:6px;
+  font-size:10px;max-width:none}
+.actions .action-secondary{display:flex!important;flex-wrap:nowrap!important;min-width:0!important;
+  width:auto;gap:3px!important;max-width:100%;align-items:center}
+.actions .action-group{display:flex!important;flex-wrap:nowrap!important;gap:3px!important;
+  flex:0 1 auto!important;min-width:0!important}
+.actions .action-group+.action-group{border:0!important;padding:0!important}
+.actions .action-group-settings{margin-left:0!important}
+.actions .action-group button{display:inline-flex;align-items:center;justify-content:center;
+  gap:4px;font-size:10px;font-weight:700;min-width:0;min-height:28px;
+  padding:5px 6px;flex:0 1 auto;max-width:100%;white-space:nowrap;
+  text-overflow:ellipsis;overflow:hidden;line-height:1.15}
+.actions .action-group button .button-label{display:block;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.actions .action-pipe{display:inline-flex;align-items:center;justify-content:center;
+  width:6px;flex:none;font-size:15px;font-weight:300;color:var(--ui-muted);opacity:.65}
+.action-icon{display:inline-flex;align-items:center;justify-content:center;
+  width:20px;height:20px;flex:none;border-radius:5px;background:#ffffff60}
+.action-icon svg{width:14px;height:14px}
+button.action-tint-zip{background:#e7eef8!important;color:#315880!important;
+  border-color:#c5d5ec!important}
+button.action-tint-xlsx{background:#e4f4e8!important;color:#247748!important;
+  border-color:#b8ddc7!important}
+button.action-tint-fba{background:#fff2d5!important;color:#88530f!important;
+  border-color:#f0d69a!important}
+button.action-tint-zip:hover:not(:disabled){background:#d2e2f4!important}
+button.action-tint-xlsx:hover:not(:disabled){background:#cae9d4!important}
+button.action-tint-fba:hover:not(:disabled){background:#ffe7af!important}
+:root[data-theme="dark"] button.action-tint-zip{background:#243c58!important;color:#adcef2!important;
+  border-color:#385c80!important}
+:root[data-theme="dark"] button.action-tint-xlsx{background:#1b4839!important;color:#b1edcb!important;
+  border-color:#396e57!important}
+:root[data-theme="dark"] button.action-tint-fba{background:#544222!important;color:#ffdb93!important;
+  border-color:#866934!important}
+:root[data-theme="dark"] .action-icon{background:#ffffff12}
+
+/* Two identical page controls flank the table; no accidental wrap. */
+.pagination{display:flex;align-items:center;gap:8px;justify-content:space-between;
+  font-size:11px;color:var(--ui-muted);padding:5px 2px;min-height:33px}
+.pagination-top{margin:0 0 4px!important;border-bottom:1px solid var(--ui-border)}
+.pagination-bottom{margin:5px 0 0!important;border-top:1px solid var(--ui-border)}
+.pagination .page-controls{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.pagination .page-controls label{font-size:10px}
+.pagination .page-controls select{font:600 10px inherit;background:var(--ui-surface);
+  color:var(--ui-text);border:1px solid var(--ui-border);padding:4px 6px;border-radius:6px}
+.pagination .page-controls button{padding:5px 9px;font-size:10px;min-height:25px}
+#shipments-table .api-fixed-header,#shipments-table .api-fixed-filter,
+#shipments-table td[data-fixed="api"]{position:sticky;right:0;z-index:4;
+  background:var(--ui-surface);box-shadow:-2px 0 3px #0001;
+  width:46px!important;min-width:46px!important;max-width:46px!important;
+  border-left:1px solid var(--ui-border);text-align:center}
+#shipments-table th.api-fixed-header{z-index:6;background:var(--ui-inset);
+  white-space:nowrap;padding:5px 3px}
+#shipments-table th.api-fixed-filter{z-index:6;background:var(--ui-inset)}
+#shipments-table td[data-fixed="api"]{padding:4px 3px!important}
+#shipments-table td.pod-thumb-cell{padding:3px!important;text-align:center}
+.pod-thumb-button{width:38px;height:43px;display:inline-flex;align-items:center;
+  justify-content:center;margin:0 auto;padding:1px;background:var(--ui-inset);
+  border:1px solid var(--ui-border);border-radius:5px;cursor:zoom-in}
+.pod-thumb-button img{display:block;object-fit:contain;width:34px;height:39px;
+  background:#fff;border-radius:3px;max-width:100%}
+.pod-thumb-button:hover,.pod-thumb-button:focus-visible{border-color:var(--ui-accent);
+  box-shadow:0 0 0 2px var(--ui-focus);outline:none}
+.pod-thumb-missing{color:var(--ui-muted);font-size:12px}
+#shipments-table th[data-col="pod_preview"],#shipments-table td[data-col="pod_preview"]{
+  text-align:center;padding-left:2px!important;padding-right:2px!important}
+button.stat-action{transition:background-color .1s}
+@media(max-width:1250px){
+  .actions{grid-template-columns:minmax(0,1fr)!important}
+  .actions .action-secondary{width:100%;justify-content:space-between}
+  .actions .action-group{flex:1 1 auto!important;justify-content:center}
+}
+@media(max-width:700px){
+  .actions{display:grid!important;grid-template-columns:minmax(0,1fr)!important;
+    overflow:visible!important}
+  .actions .action-main{display:flex!important;flex-wrap:nowrap!important}
+  .actions .action-main input[type=search]{flex:1 1 50px;min-width:40px;width:auto}
+  .actions .action-secondary{overflow:hidden!important;max-width:100%;gap:1px!important}
+  .actions .action-group{flex:1 1 auto!important;gap:1px!important}
+  .actions .action-group button{padding:4px 2px;gap:2px;font-size:9px;
+    min-width:0;min-height:26px}
+  .action-icon{width:14px;height:17px;border-radius:3px}
+  .action-icon svg{width:11px;height:11px}
+  .actions .action-pipe{width:3px;font-size:12px}
+  .pagination{font-size:9px}
+  .pagination .page-controls button{font-size:9px;padding:4px 4px}
+  .pagination .page-controls select{font-size:9px;padding:3px 2px}
+  .pagination .page-controls label{display:none}
+}
+@media(max-width:480px){
+  .stats{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+  .stats .stat .stat-action{min-height:31px;padding:4px 6px!important}
+  .stats .stat .stat-action strong{font-size:15px!important}
+  .pending-months{grid-template-columns:repeat(4,minmax(0,1fr))!important}
+  .actions .action-group button{font-size:8px;padding:3px 1px;letter-spacing:-.04em}
+  .actions .action-icon{width:12px}
+  .actions .action-icon svg{width:10px;height:10px}
+  .pagination .page-controls{gap:3px}
+}
+
+/* Compressed mobile labels preserve meaning and never break the toolbar into rows.
+   Full labels remain in aria-label/title and on wider viewports. */
+@media(max-width:480px){
+  #retry-selected .button-label,
+  #column-filters-toggle .button-label,
+  #clear-column-filters .button-label,
+  #default-view .button-label,
+  #columns-open .button-label{display:none!important}
+  #retry-selected::after{content:"API"}
+  #column-filters-toggle::after{content:"Filtry"}
+  #clear-column-filters::after{content:"Czyść"}
+  #default-view::after{content:"Widok"}
+  #columns-open::after{content:"Kol."}
+  .actions .action-group button{padding:4px 3px!important;font-size:9px!important}
+  .actions .action-secondary .action-group{flex:0 1 auto!important}
+  .actions .action-icon{width:15px}
+}

@@ -434,11 +434,11 @@ for _key in UPS_EXTRA_COLUMNS:
 SORT_COLUMNS = dict(LIST_COLUMNS, weight="CAST(NULLIF(weight_value,'') AS REAL)")
 
 
-def list_numbers(search: str = "", scope: str = "all", limit: int = 200,
+def list_numbers(search: str = "", scope: str = "all", limit: int = 1500,
                  offset: int = 0, month: str = "all", sort_by: str = "ship_date",
                  sort_dir: str = "desc", column_filters: dict[str, str] | None = None) -> dict:
     """Page, filter and sort the complete SQLite dataset, not just the visible page."""
-    limit = max(1, min(limit, 500))
+    limit = max(1, min(limit, 2000))
     offset = max(0, offset)
     if sort_by not in SORT_COLUMNS or sort_dir not in {"asc", "desc"}:
         raise ValueError("Nieprawidłowe sortowanie.")
@@ -454,6 +454,15 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 200,
         where.append("state='ready'")
     elif scope == "missing":
         where.append("state!='ready'")
+    elif scope in ("delayed", "onway"):
+        # Same disjoint grouping as global stats(): delayed always has priority.
+        raw = "LOWER(COALESCE(ups_status,''))"
+        is_delayed = f"({raw} LIKE '%delay%' OR {raw} LIKE '%opóźn%')"
+        is_onway = "(" + " OR ".join(f"{raw} LIKE '%{term}%'" for term in
+            ("reschedul", "przełożon", "on the way", "w drodze", "in transit")) + ")"
+        where.append("state!='ready'")
+        where.append(is_delayed if scope == "delayed"
+                     else f"(NOT {is_delayed} AND {is_onway})")
     elif scope != "all":
         raise ValueError("Nieprawidłowy filtr.")
     if month and month != "all":

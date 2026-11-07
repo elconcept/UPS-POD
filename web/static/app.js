@@ -15,7 +15,7 @@ function saveCookie(name, value) {
     + COOKIE_AGE + "; SameSite=Strict" + (location.protocol === "https:" ? "; Secure" : "");
 }
 const savedScope = getCookie("ups_pod_scope");
-let scope = ["all", "ready", "missing"].includes(savedScope) ? savedScope : "all";
+let scope = ["all", "ready", "missing", "delayed", "onway"].includes(savedScope) ? savedScope : "all";
 let offset = 0;
 let total = 0;
 let rows = [];
@@ -25,9 +25,11 @@ const monthParts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
 const savedMonth = getCookie("ups_pod_month");
 let activeMonth = savedMonth === "all" || /^\d{4}(?:-(0[1-9]|1[0-2]))?$/.test(savedMonth)
   ? savedMonth : monthParts.year + "-" + monthParts.month;
-const PAGE_SIZE = 200;
+const PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000, 1500, 2000];
+const priorPageSize = Number(getCookie("ups_pod_page_size"));
+let pageSize = PAGE_SIZE_OPTIONS.includes(priorPageSize) ? priorPageSize : 1500;
 const BASE_COLUMNS = [
-  "fba", "tracking", "ship_date", "delivery_date", "weight", "ups_status", "queue", "document"
+  "fba", "tracking", "ship_date", "delivery_date", "weight", "ups_status", "document", "pod_preview"
 ];
 // Allowlisted UPS Tracking API paths; values are extracted server-side without
 // returning raw addresses, personal identities, signature, photo or POD data.
@@ -53,13 +55,13 @@ const COLUMN_KEYS = [...BASE_COLUMNS, ...EXTRA_COLUMNS.map(([key]) => key)];
 const columnLabels = {
   fba: "Shipment ID", tracking: "Numer UPS", ship_date: "Data nadania",
   delivery_date: "Data doręczenia", weight: "Waga", ups_status: "Status UPS",
-  queue: "API", document: "Dokument"
+  document: "Dokument", pod_preview: "Podgląd POD"
 };
 for (const [key, label] of EXTRA_COLUMNS) columnLabels[key] = label;
 const DEFAULT_VISIBLE = BASE_COLUMNS.filter((key) => key !== "weight");
 const DEFAULT_WIDTHS = {
   fba: 215, tracking: 178, ship_date: 119, delivery_date: 146,
-  weight: 95, ups_status: 156, queue: 62, document: 126
+  weight: 95, ups_status: 156, document: 114, pod_preview: 82
 };
 for (const [key] of EXTRA_COLUMNS) DEFAULT_WIDTHS[key] = 144;
 function validKeys(value) {
@@ -69,12 +71,17 @@ function validKeys(value) {
 function readJsonCookie(key) {
   try { return JSON.parse(getCookie(key) || "null"); } catch { return null; }
 }
-const priorOrder = getCookie("ups_pod_column_order").split(",").filter(Boolean);
-let columnOrder = validKeys(priorOrder) && BASE_COLUMNS.every((key) => priorOrder.includes(key))
+const priorOrder = getCookie("ups_pod_column_order").split(",")
+  .filter((key) => key && key !== "queue");
+let columnOrder = validKeys(priorOrder) && priorOrder.every((key) => COLUMN_KEYS.includes(key))
   ? [...priorOrder, ...COLUMN_KEYS.filter((key) => !priorOrder.includes(key))]
   : [...COLUMN_KEYS];
 const priorVisible = readJsonCookie("ups_pod_columns_visible");
-let visibleColumns = new Set(validKeys(priorVisible) ? priorVisible : DEFAULT_VISIBLE);
+const normalizedVisible = Array.isArray(priorVisible)
+  ? priorVisible.filter((key) => key !== "queue") : [];
+let visibleColumns = new Set(validKeys(normalizedVisible)
+  ? (priorVisible.includes("queue") ? [...normalizedVisible, "pod_preview"] : normalizedVisible)
+  : DEFAULT_VISIBLE);
 const savedWidths = readJsonCookie("ups_pod_column_widths");
 let columnWidths = { ...DEFAULT_WIDTHS };
 if (savedWidths && typeof savedWidths === "object") {
@@ -99,6 +106,7 @@ try {
 } catch { columnFilters = {}; }
 let supportConfigured = false;
 let refreshSerial = 0;
+let lastRenderedSignature = "";
 const $ = (id) => document.getElementById(id);
 
 function saveColumnPrefs() {
@@ -113,6 +121,7 @@ function saveColumnPrefs() {
 // sum of column minimums is larger than the viewport (typically on mobile).
 // The queue/PDF columns expand much less than tracking and FBA fields.
 const SELECT_COLUMN_WIDTH = 44;
+const API_COLUMN_WIDTH = 46;
 const COLUMN_GROW = {
   fba: 2.0, tracking: 2.0, ship_date: 0.9, delivery_date: 1.0,
   weight: 0.7, ups_status: 0.9, queue: 0.12, document: 0.5
@@ -126,10 +135,12 @@ function applyColumnWidths() {
   const wrapper = table.closest(".table-wrap");
   const keys = columnOrder.filter((key) => visibleColumns.has(key));
   const total = Math.max(1, keys.reduce((sum, key) => sum + columnWidths[key], 0));
-  const available = Math.max(1, wrapper.clientWidth - SELECT_COLUMN_WIDTH);
+  const available = Math.max(1, wrapper.clientWidth - SELECT_COLUMN_WIDTH - API_COLUMN_WIDTH);
   table.style.width = "100%";
   table.style.minWidth = "0";
   const group = table.querySelector("colgroup");
+  const apiColumn = group.querySelector('col[data-fixed="api"]');
+  if (apiColumn) apiColumn.style.width = API_COLUMN_WIDTH + "px";
   for (const key of keys) {
     const width = Math.max(0.1, available * columnWidths[key] / total);
     const column = [...group.children].find((node) => node.dataset.col === key);
@@ -172,12 +183,18 @@ function applyColumnOrder() {
     group.append(group.querySelector('[data-col="' + key + '"]'));
   }
   for (const row of table.tBodies[0].rows) {
-    if (row.cells.length !== COLUMN_KEYS.length + 1) continue;
+    if (row.cells.length !== COLUMN_KEYS.length + 2) continue;
     for (const key of columnOrder)
       row.append(row.querySelector('[data-col="' + key + '"]'));
+    row.append(row.querySelector('[data-fixed="api"]'));
+  }
+  for (const fixed of [head, filters, group]) {
+    const api = fixed.querySelector('[data-fixed="api"]');
+    if (api) fixed.append(api);
   }
   for (const th of head.cells) {
     const key = th.dataset.col;
+    if (!key) continue;
     th.setAttribute("aria-sort", key !== sortBy ? "none"
       : sortDirection === "asc" ? "ascending" : "descending");
     const direction = th.querySelector(".sort-indicator");
@@ -240,17 +257,19 @@ function initColumns() {
   $("column-filters-toggle").setAttribute("aria-expanded", String(!filterRow.hidden));
   filterRow.setAttribute("aria-label", "Filtry poszczególnych kolumn");
   let dragging = "";
+  const fixedApiHeader = header.lastElementChild;
+  fixedApiHeader.dataset.fixed = "api";
   for (const [key, label] of EXTRA_COLUMNS) {
     const th = document.createElement("th");
     th.textContent = label;
     th.title = EXTRA_COLUMNS.find(([candidate]) => candidate === key)?.[2] || "";
-    header.append(th);
+    header.insertBefore(th, fixedApiHeader);
   }
   const fixedFilter = document.createElement("th");
   fixedFilter.className = "selection-filter";
   fixedFilter.setAttribute("aria-hidden", "true");
   filterRow.append(fixedFilter);
-  [...header.cells].slice(1).forEach((th, index) => {
+  [...header.cells].slice(1, -1).forEach((th, index) => {
     const key = COLUMN_KEYS[index];
     th.dataset.col = key;
     th.classList.add("column-header");
@@ -432,6 +451,11 @@ function initColumns() {
     filterCell.append(input);
     filterRow.append(filterCell);
   });
+  const apiFilter = document.createElement("th");
+  apiFilter.dataset.fixed = "api";
+  apiFilter.className = "api-fixed-filter";
+  apiFilter.setAttribute("aria-hidden", "true");
+  filterRow.append(apiFilter);
   header.after(filterRow);
   const group = document.createElement("colgroup");
   const selectCol = document.createElement("col");
@@ -443,6 +467,10 @@ function initColumns() {
     col.dataset.col = key;
     group.append(col);
   }
+  const apiCol = document.createElement("col");
+  apiCol.dataset.fixed = "api";
+  apiCol.style.width = API_COLUMN_WIDTH + "px";
+  group.append(apiCol);
   $("shipments-table").insertBefore(group, $("shipments-table").tHead);
   applyColumnOrder();
   buildColumnPicker();
@@ -546,13 +574,37 @@ function openShipmentLogs(row) {
   $("tab-logs").click();
 }
 
+function updatePagination() {
+  const start = total && rows.length ? offset + 1 : 0;
+  const end = total && rows.length ? offset + rows.length : 0;
+  const current = total ? Math.floor(offset / pageSize) + 1 : 0;
+  const count = Math.ceil(total / pageSize);
+  const label = total
+    ? "Pozycje " + start + "–" + end + " z " + total
+      + " · strona " + current + "/" + count
+    : "Brak pozycji";
+  for (const suffix of ["", "-top"]) {
+    $("page-info" + suffix).textContent = label;
+    $("prev-page" + suffix).disabled = offset <= 0;
+    $("next-page" + suffix).disabled = offset + pageSize >= total;
+    $("page-size" + suffix).value = String(pageSize);
+  }
+}
+function refreshSelectedCheckboxes() {
+  for (const element of $("rows").querySelectorAll("tr[data-tracking]")) {
+    const check = element.querySelector(".selection-cell input[type=checkbox]");
+    if (check) check.checked = selected.has(element.dataset.tracking);
+  }
+  $("select-page").checked = rows.length > 0 && rows.every((r) => selected.has(r.tracking));
+  syncSelected();
+}
 function renderRows() {
   hideUpsTooltip();
   const tbody = $("rows");
   tbody.replaceChildren();
   if (!rows.length) {
     const tr = document.createElement("tr");
-    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = visibleColumns.size + 1;
+    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = visibleColumns.size + 2;
     tbody.append(tr);
   }
   for (const row of rows) {
@@ -573,7 +625,7 @@ function renderRows() {
         } else selected.add(row.tracking);
       } else if (tick.checked) selected.add(row.tracking);
       else selected.delete(row.tracking);
-      renderRows();
+      refreshSelectedCheckboxes();
     });
     // Selection is a permanent leading column, outside user-defined order.
     const selectionCell = document.createElement("td");
@@ -673,7 +725,7 @@ function renderRows() {
     queueTag.setAttribute("aria-label", queueLabel);
     queueTag.title = queueLabel + " · " + (row.error || row.ups_detail_pl || info[2]);
     statusCell.append(queueTag);
-    tr.append(statusCell);
+    statusCell.dataset.fixed = "api";
 
     const doc = document.createElement("td");
     doc.className = "compact-document";
@@ -684,7 +736,7 @@ function renderRows() {
       link.textContent = "↓ PDF";
       link.setAttribute("download", "");
       link.setAttribute("aria-label", "Pobierz PDF potwierdzenia doręczenia " + row.tracking);
-      link.title = "Pobierz PDF · najedź, aby zobaczyć miniaturę POD";
+      link.title = "Pobierz PDF — podgląd znajdziesz w kolumnie Podgląd POD";
       link.dataset.tracking = row.tracking;
       doc.append(link);
     } else if (isPastDeliveryDate(row) && row.support_status === "sent") {
@@ -735,19 +787,45 @@ function renderRows() {
       doc.append(bubble);
     }
     tr.append(doc);
+    const podCell = document.createElement("td");
+    podCell.className = "pod-thumb-cell";
+    if (row.state === "ready") {
+      const thumb = document.createElement("a");
+      thumb.className = "pod-thumb-button";
+      thumb.href = "/api/shipments/" + encodeURIComponent(row.tracking) + "/pdf";
+      thumb.target = "_blank";
+      thumb.rel = "noopener noreferrer";
+      thumb.dataset.tracking = row.tracking;
+      thumb.title = "Podgląd POD — najedź na miniaturę lub otwórz PDF";
+      thumb.setAttribute("aria-label", "Zobacz podgląd dokumentu POD " + row.tracking);
+      const image = document.createElement("img");
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.alt = "";
+      image.width = 34; image.height = 39;
+      image.src = "/api/shipments/" + encodeURIComponent(row.tracking) + "/thumbnail";
+      thumb.append(image);
+      podCell.append(thumb);
+    } else {
+      const missing = document.createElement("span");
+      missing.className = "pod-thumb-missing";
+      missing.textContent = "—";
+      missing.title = "Brak dokumentu do podglądu";
+      podCell.append(missing);
+    }
+    tr.append(podCell);
     for (const [key, label] of EXTRA_COLUMNS) {
       const value = (row.ups_extra || {})[key] || "—";
       const cell = addCell(tr, value, "extra-cell");
       cell.title = label + ": " + value;
     }
-    [...tr.cells].slice(1).forEach((cell, index) => { cell.dataset.col = COLUMN_KEYS[index]; });
+    tr.append(statusCell);
+    [...tr.cells].slice(1, -1).forEach((cell, index) => {
+      cell.dataset.col = COLUMN_KEYS[index];
+    });
     tbody.append(tr);
   }
-  $("page-info").textContent = total
-    ? "Pozycje " + (offset + 1) + "–" + (offset + rows.length) + " z " + total
-    : "Brak pozycji";
-  $("prev-page").disabled = offset === 0;
-  $("next-page").disabled = offset + PAGE_SIZE >= total;
+  updatePagination();
   $("select-page").checked = rows.length > 0 && rows.every((r) => selected.has(r.tracking));
   syncSelected();
   applyColumnOrder();
@@ -765,7 +843,7 @@ podCaption.textContent = "Podgląd pierwszej strony PDF";
 podTooltip.append(podImage, podCaption);
 document.body.append(podTooltip);
 function showPodPreview(target) {
-  const link = target?.closest?.('a.document-bubble.ready[data-tracking]');
+  const link = target?.closest?.('a.pod-thumb-button[data-tracking]');
   if (!link) return;
   const tracking = link.dataset.tracking;
   if (!tracking) return;
@@ -783,7 +861,7 @@ function showPodPreview(target) {
 function hidePodPreview() { podTooltip.hidden = true; }
 $("rows").addEventListener("mouseover", (event) => showPodPreview(event.target));
 $("rows").addEventListener("mouseout", (event) => {
-  if (event.target.closest?.('a.document-bubble.ready')) hidePodPreview();
+  if (event.target.closest?.('a.pod-thumb-button')) hidePodPreview();
 });
 $("rows").addEventListener("focusin", (event) => showPodPreview(event.target));
 $("rows").addEventListener("focusout", hidePodPreview);
@@ -823,15 +901,15 @@ function syncSelected() {
   }
   const count = selected.size;
   const available = [...readySelected].filter((number) => selected.has(number)).length;
-  $("download-selected").textContent = "ZIP";
+  $("download-selected").querySelector(".button-label").textContent = "ZIP";
   $("download-selected").title = available
     ? "Pobierz " + available + " gotowych POD w ZIP (z " + count + " wybranych)."
     : "Zaznacz przesyłki z gotowym dokumentem PDF, aby pobrać ZIP.";
-  $("retry-selected").textContent = "PONÓW API";
+  $("retry-selected").querySelector(".button-label").textContent = "PONÓW API";
   $("retry-selected").title = "Ponów sprawdzenie API dla " + count + " wybranych przesyłek.";
-  $("export-selected").textContent = "XLSX";
+  $("export-selected").querySelector(".button-label").textContent = "XLSX";
   $("export-selected").title = "Utwórz zestawienie XLSX dla " + count + " wybranych przesyłek.";
-  $("fba-selected").textContent = "FBA";
+  $("fba-selected").querySelector(".button-label").textContent = "FBA";
   $("fba-selected").title = "Przypisz Shipment ID dla " + count + " wybranych przesyłek.";
   $("fba-selected").disabled = count === 0;
   $("download-selected").disabled = available === 0;
@@ -844,13 +922,15 @@ async function refresh() {
   const params = new URLSearchParams({
     scope, month: activeMonth, q: $("query").value.trim(),
     sort: sortBy, direction: sortDirection,
-    limit: String(PAGE_SIZE), offset: String(offset),
+    limit: String(pageSize), offset: String(offset),
   });
   for (const key of COLUMN_KEYS)
     if ((columnFilters[key] || "").trim()) params.set("f_" + key, columnFilters[key].trim());
   try {
     const payload = await requestJson("/api/shipments?" + params);
     if (serial !== refreshSerial) return;
+    const newSignature = JSON.stringify(payload.rows);
+    const needsRender = newSignature !== lastRenderedSignature;
     rows = payload.rows;
     total = payload.total;
     supportConfigured = payload.support_configured === true;
@@ -921,7 +1001,13 @@ async function refresh() {
         + " (" + item.count + ")");
     });
     $("refresh-status").textContent = "Aktualizacja: " + new Date().toLocaleTimeString("pl-PL");
-    renderRows();
+    refreshKpiButtons();
+    if (needsRender) {
+      renderRows();
+      lastRenderedSignature = newSignature;
+    } else {
+      updatePagination();
+    }
   } catch (error) {
     if (serial !== refreshSerial) return;
     // A background GET failure is not an import failure. Keep existing rows
@@ -931,6 +1017,37 @@ async function refresh() {
   }
 }
 
+function refreshKpiButtons() {
+  document.querySelectorAll(".stat-action[data-kpi]").forEach((button) => {
+    const target = button.dataset.kpi;
+    const active = target === "pending-year"
+      ? (scope === "missing" && activeMonth === monthParts.year)
+      : (target === scope && activeMonth === "all");
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+function applyQuickFilter(target) {
+  const kpi = target === "pending-year" ? "missing" : target;
+  if (!["all", "ready", "missing", "delayed", "onway"].includes(kpi)) return;
+  scope = kpi;
+  activeMonth = target === "pending-year" ? monthParts.year : "all";
+  columnFilters = {};
+  document.querySelectorAll(".column-filter").forEach((input) => { input.value = ""; });
+  $("query").value = "";
+  saveCookie("ups_pod_query", "");
+  saveCookie("ups_pod_column_filters", "{}");
+  saveCookie("ups_pod_scope", scope);
+  saveCookie("ups_pod_month", activeMonth);
+  offset = 0;
+  document.querySelectorAll("[data-scope]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.scope === scope);
+  });
+  void refresh();
+}
+document.querySelectorAll(".stat-action[data-kpi]").forEach((button) => {
+  button.addEventListener("click", () => applyQuickFilter(button.dataset.kpi));
+});
 function selectPendingMonth(month) {
   const active = scope === "missing" && activeMonth === month;
   scope = "missing";
@@ -989,11 +1106,12 @@ $("column-filters-toggle").addEventListener("click", () => {
   filter.hidden = !filter.hidden;
   const open = !filter.hidden;
   $("column-filters-toggle").setAttribute("aria-expanded", String(open));
-  $("column-filters-toggle").textContent = open ? "Ukryj filtry" : "Filtry kolumn";
+  $("column-filters-toggle").querySelector(".button-label").textContent =
+    open ? "Ukryj filtry" : "Pokaż filtry";
   saveCookie("ups_pod_filters_visible", open ? "1" : "0");
 });
-$("column-filters-toggle").textContent =
-  $("column-filter-row").hidden ? "Filtry kolumn" : "Ukryj filtry";
+$("column-filters-toggle").querySelector(".button-label").textContent =
+  $("column-filter-row").hidden ? "Pokaż filtry" : "Ukryj filtry";
 $("columns-open").addEventListener("click", () => {
   buildColumnPicker();
   $("columns-dialog").showModal();
@@ -1078,14 +1196,31 @@ $("query").addEventListener("input", () => {
   clearTimeout(searchTimeout);
   searchTimeout = setTimeout(() => { offset = 0; void refresh(); }, 300);
 });
-$("prev-page").addEventListener("click", () => { offset = Math.max(0, offset - PAGE_SIZE); void refresh(); });
-$("next-page").addEventListener("click", () => { offset += PAGE_SIZE; void refresh(); });
+for (const suffix of ["", "-top"]) {
+  $("prev-page" + suffix).addEventListener("click", () => {
+    offset = Math.max(0, offset - pageSize);
+    void refresh();
+  });
+  $("next-page" + suffix).addEventListener("click", () => {
+    offset += pageSize;
+    void refresh();
+  });
+  $("page-size" + suffix).addEventListener("change", (event) => {
+    const newSize = Number(event.target.value);
+    if (!PAGE_SIZE_OPTIONS.includes(newSize)) return;
+    pageSize = newSize;
+    saveCookie("ups_pod_page_size", String(pageSize));
+    offset = 0;
+    updatePagination();
+    void refresh();
+  });
+}
 $("select-page").addEventListener("change", (event) => {
   for (const row of rows) {
     if (event.target.checked) selected.add(row.tracking);
     else selected.delete(row.tracking);
   }
-  renderRows();
+  refreshSelectedCheckboxes();
 });
 
 async function downloadZip(all) {

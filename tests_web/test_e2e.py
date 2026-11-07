@@ -525,7 +525,7 @@ def test_removed_delivery_columns_from_web_table(application):
     script = (root / "web/static/app.js").read_text()
     for name in ("<th>Zdjęcie</th>", "<th>Godzina doręczenia</th>", "<th>Odebrał</th>"):
         assert name not in template
-    assert 'colspan="9"' in template
+    assert 'colspan="10"' in template
     assert "tr.append(photoCell)" not in script
     assert 'addCell(tr, row.received_by' not in script
 
@@ -568,7 +568,7 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
             ).evaluate_all("(nodes) => nodes.map((n) => n.firstChild.textContent)")
             assert headings[:8] == [
                 "Shipment ID", "Numer UPS", "Data nadania",
-                "Data doręczenia", "Waga", "Status UPS", "API", "Dokument",
+                 "Data doręczenia", "Waga", "Status UPS", "Dokument", "Podgląd POD",
             ]
             assert len(headings) == 24
             expect(page.locator('.column-header[data-col="weight"]')).to_be_hidden()
@@ -1339,7 +1339,7 @@ def test_selection_column_fixed_icons_polish_and_full_width(application):
                 expect(page.locator("#rows tr .selection-cell")).to_have_count(3)
                 assert page.locator("#rows tr .fba-cell input[type=checkbox]").count() == 0
                 expect(page.locator('.column-header[data-col="fba"] .sort-header')).to_contain_text("Shipment ID")
-                expect(page.locator('.column-header[data-col="queue"] .sort-header')).to_contain_text("API")
+                expect(page.locator(".api-fixed-header")).to_have_text("API")
 
                 row_a = page.locator(f'#rows tr[data-tracking="{a}"]')
                 row_b = page.locator(f'#rows tr[data-tracking="{b}"]')
@@ -1562,7 +1562,7 @@ def test_full_width_24_columns_filter_visibility_resizer_and_xlsx_browser(applic
                 }])
                 page = ctx.new_page()
                 page.goto(f"http://127.0.0.1:{server.server_port}")
-                expect(page.locator("#rows tr")).to_have_count(200)
+                expect(page.locator("#rows tr")).to_have_count(201)
                 expect(page.locator("#column-filter-row")).to_be_hidden()
                 page.locator("#column-filters-toggle").click()
                 expect(page.locator("#column-filter-row")).to_be_visible()
@@ -1607,7 +1607,7 @@ def test_full_width_24_columns_filter_visibility_resizer_and_xlsx_browser(applic
                     current = float(th.evaluate("(el)=>el.style.width.replace('px','')"))
                     assert current > original
                     assert abs(table_metrics()["wrap"]-table_metrics()["table"]) <= 2
-                    page.locator(f'#rows tr[data-tracking="{first}"] .document-bubble.ready').hover()
+                    page.locator(f'#rows tr[data-tracking="{first}"] .pod-thumb-button').hover()
                     expect(page.locator(".pod-preview")).to_be_visible()
                     assert page.locator(".pod-preview img").get_attribute("src").endswith(
                         f"/api/shipments/{first}/thumbnail")
@@ -1703,13 +1703,13 @@ def test_month_buttons_tool_groups_reset_and_column_picker(application):
                 assert page.locator("#pending-months").evaluate(
                     "(x)=> x.scrollWidth <= x.clientWidth + 2")
                 assert page.locator("#download-all").count() == 0
-                labels = [page.locator("#"+name).text_content() for name in
+                labels = [page.locator("#"+name+" .button-label").text_content() for name in
                     ("download-selected","export-selected","fba-selected",
                      "retry-selected","clear-column-filters","default-view","columns-open")]
                 assert labels == ["ZIP","XLSX","FBA","PONÓW API",
-                    "WYCZYŚĆ FILTRY","DOMYŚLNY WIDOK","KOLUMNY"]
+                    "Wyczyść filtry","Domyślny widok","Kolumny"]
                 assert page.locator(".action-secondary .action-group").count() == 3
-                assert page.locator(".action-secondary .action-group-retry button").count() == 1
+                assert page.locator(".action-secondary .action-group-filters #retry-selected").count() == 1
                 expect(page.locator("#column-filter-row")).to_be_hidden()
                 expect(page.locator(f'#rows tr[data-tracking="{numbers[0]}"] .document-waiting-icon')).to_have_attribute(
                     "aria-label", "Brak PDF. Otwórz dziennik operacji przesyłki " + numbers[0])
@@ -1750,6 +1750,186 @@ def test_month_buttons_tool_groups_reset_and_column_picker(application):
                 assert page.evaluate(
                     "document.documentElement.scrollWidth <= window.innerWidth + 1")
                 context.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+def test_backend_1500_default_page_and_global_kpi_filters(application):
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    import service
+
+    now = service.utcnow()
+    year = dt.datetime.now(ZoneInfo("Europe/Warsaw")).year
+    month = f"{year}-11"
+    with service.connection() as db:
+        db.executemany(
+            "INSERT INTO shipments(tracking,state,created_at,updated_at,next_attempt_at,ship_date)"
+            " VALUES(?,'queued',?,?,?,?)",
+            [("1Z"+f"{i:016d}",now,now,now,month+"-04") for i in range(1605)]
+        )
+        db.execute("UPDATE shipments SET state='ready' WHERE tracking='1Z0000000000000000'")
+        db.execute("UPDATE shipments SET state='retry',ups_status='Delayed' WHERE tracking='1Z0000000000000001'")
+        db.execute("UPDATE shipments SET state='retry',ups_status='On the Way: Delayed' WHERE tracking='1Z0000000000000002'")
+        db.execute("UPDATE shipments SET state='retry',ups_status='On the Way' WHERE tracking='1Z0000000000000003'")
+        db.execute("UPDATE shipments SET state='retry',ups_status='Delivery Rescheduled' WHERE tracking='1Z0000000000000004'")
+    assert len(service.list_numbers()["rows"]) == 1500
+    assert len(service.list_numbers(offset=1500)["rows"]) == 105
+    assert len(service.list_numbers(limit=2000)["rows"]) == 1605
+    assert len(service.list_numbers(limit=5000)["rows"]) == 1605
+    assert service.list_numbers(scope="ready")["total"] == 1
+    assert service.list_numbers(scope="delayed")["total"] == 2
+    assert service.list_numbers(scope="onway")["total"] == 2
+    assert service.list_numbers(scope="missing")["total"] == 1604
+    assert service.stats()["delayed"] == 2
+    assert service.stats()["on_way_or_rescheduled"] == 2
+    with application.test_client() as c:
+        data = c.get("/api/shipments?month=all").json
+        assert data["total"] == 1605
+        assert len(data["rows"]) == 1500
+        assert c.get("/api/shipments?scope=delayed&month=all").json["total"] == 2
+        assert c.get("/api/shipments?scope=onway&month=all").json["total"] == 2
+        assert len(c.get("/api/shipments?limit=5000&month=all").json["rows"]) == 1605
+
+
+def test_browser_1500_rows_double_pager_kpi_fixed_api_and_pod_thumbnail(application):
+    import datetime as dt
+    import pymupdf
+    import service
+    from zoneinfo import ZoneInfo
+
+    now = service.utcnow()
+    year = dt.datetime.now(ZoneInfo("Europe/Warsaw")).year
+    month = f"{year}-11"
+    with service.connection() as db:
+        db.executemany(
+            "INSERT INTO shipments(tracking,state,created_at,updated_at,next_attempt_at,ship_date)"
+            " VALUES(?,'queued',?,?,?,?)",
+            [("1Z"+f"{i:016d}",now,now,now,month+"-04") for i in range(1510)]
+        )
+        for i,status in [(1,"Delayed"),(2,"On the Way: Delayed"),
+                         (3,"On the Way"),(4,"Delivery Rescheduled")]:
+            db.execute("UPDATE shipments SET state='retry',ups_status=? WHERE tracking=?",
+                       (status, "1Z"+f"{i:016d}"))
+    first="1Z0000000000000000"
+    doc=pymupdf.open()
+    page=doc.new_page(width=340,height=460)
+    page.insert_text((25,35),"UPS POD: screenshot test")
+    target=service.document_target(first)
+    target.write_bytes(doc.tobytes())
+    doc.close()
+    service.mark_ready(first,"Doręczono","",str(target),"","pdf","test")
+    server=make_server("127.0.0.1",0,application,threaded=True)
+    thread=threading.Thread(target=server.serve_forever,daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as pw:
+            browser=pw.chromium.launch()
+            context=browser.new_context(viewport={"width":1440,"height":940})
+            context.add_cookies([{"name":"ups_pod_month","value":"all",
+                "url":f"http://127.0.0.1:{server.server_port}"}])
+            page=context.new_page()
+            page.goto(f"http://127.0.0.1:{server.server_port}")
+            expect(page.locator("#rows tr")).to_have_count(1500,timeout=30000)
+            expect(page.locator("#page-size-top")).to_have_value("1500")
+            expect(page.locator("#page-size")).to_have_value("1500")
+            assert "1500 z 1510" in page.locator("#page-info-top").inner_text()
+            assert page.locator("#page-info-top").inner_text()==page.locator("#page-info").inner_text()
+            assert page.locator("#shipments-table thead tr:first-child th").last.inner_text()=="API"
+            assert page.locator("#shipments-table #rows tr").first.locator("td").last.get_attribute("data-fixed")=="api"
+            assert page.locator("#columns-picker .column-choice").filter(has_text="API").count()==0
+            assert page.locator('.api-fixed-header').evaluate(
+                "(el)=>getComputedStyle(el).position")=="sticky"
+            assert page.locator('.api-fixed-header').evaluate(
+                "(el)=>Math.round(el.getBoundingClientRect().width)")<=48
+            thumb=page.locator(f'#rows tr[data-tracking="{first}"] .pod-thumb-button')
+            expect(thumb).to_be_visible()
+            expect(thumb.locator("img")).to_have_attribute("loading","lazy")
+            thumb.hover()
+            expect(page.locator(".pod-preview")).to_be_visible()
+            assert page.locator(".pod-preview img").get_attribute("src").endswith(
+                "/api/shipments/"+first+"/thumbnail")
+            page.locator("#next-page-top").click()
+            expect(page.locator("#rows tr")).to_have_count(10)
+            expect(page.locator("#next-page")).to_be_disabled()
+            expect(page.locator("#prev-page-top")).to_be_enabled()
+            page.locator("#prev-page").click()
+            expect(page.locator("#rows tr")).to_have_count(1500)
+            page.locator("#page-size-top").select_option("500")
+            expect(page.locator("#rows tr")).to_have_count(500)
+            expect(page.locator("#page-size")).to_have_value("500")
+            assert "ups_pod_page_size=500" in page.evaluate("document.cookie")
+            page.reload()
+            expect(page.locator("#page-size-top")).to_have_value("500")
+            expect(page.locator("#rows tr")).to_have_count(500)
+            page.locator('.stat-action[data-kpi="delayed"]').click()
+            expect(page.locator("#rows tr")).to_have_count(2)
+            page.locator('.stat-action[data-kpi="onway"]').click()
+            expect(page.locator("#rows tr")).to_have_count(2)
+            page.locator('.stat-action[data-kpi="ready"]').click()
+            expect(page.locator("#rows tr")).to_have_count(1)
+            page.locator('.stat-action[data-kpi="pending-year"]').click()
+            expect(page.locator("#rows tr")).to_have_count(500)
+            page.locator('.stat-action[data-kpi="all"]').click()
+            expect(page.locator("#rows tr")).to_have_count(500)
+            context.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_responsive_toolbar_no_button_wrapping_390_to_1920(application):
+    import service
+    service.add_numbers("1Z004R316837162143 1Z004R316839216224")
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            for width in (390, 640, 768, 1024, 1440, 1920):
+                for theme in ("light", "dark"):
+                    context = browser.new_context(viewport={"width":width, "height":900})
+                    context.add_cookies([
+                        {"name":"ups_pod_theme","value":theme,
+                         "url":f"http://127.0.0.1:{server.server_port}"},
+                        {"name":"ups_pod_month","value":"all",
+                         "url":f"http://127.0.0.1:{server.server_port}"}
+                    ])
+                    page = context.new_page()
+                    page.goto(f"http://127.0.0.1:{server.server_port}")
+                    expect(page.locator("#rows tr")).to_have_count(2)
+                    metrics=page.evaluate("""() => {
+                        const rail=document.querySelector('.action-secondary');
+                        const r=rail.getBoundingClientRect();
+                        const buttons=[...rail.querySelectorAll('button')].map(e=>{
+                          const b=e.getBoundingClientRect();
+                          return {id:e.id,x:b.left,width:b.width,top:b.top,right:b.right,
+                           height:b.height};
+                        });
+                        return {width:innerWidth, doc:document.documentElement.scrollWidth,
+                          rail:{left:r.left,right:r.right,top:r.top,width:r.width},
+                          buttons, first:document.querySelector('.action-main').getBoundingClientRect().top,
+                          monthCount:document.querySelectorAll('#pending-months button').length,
+                          apiRight:document.querySelector('.api-fixed-header').getBoundingClientRect().right,
+                          tableRight:document.querySelector('#shipments-table').getBoundingClientRect().right};
+                    }""")
+                    assert metrics["doc"] <= width+2, metrics
+                    assert metrics["monthCount"] == 13
+                    assert max(b["top"]+b["height"]/2 for b in metrics["buttons"]) - min(
+                        b["top"]+b["height"]/2 for b in metrics["buttons"]) <= 2, metrics
+                    assert all(b["width"] >= 18 and b["height"] >= 25
+                               for b in metrics["buttons"]), metrics
+                    assert all(b["right"] <= metrics["rail"]["right"] + 2
+                               and b["x"] >= metrics["rail"]["left"] - 2
+                               for b in metrics["buttons"]), metrics
+                    assert abs(metrics["apiRight"]-metrics["tableRight"]) <= 2, metrics
+                    assert page.locator('.stat-action').count() == 6
+                    assert page.locator(".pending-history-title").inner_text() == "Brak POD"
+                    assert page.locator("#column-filters-toggle").get_attribute("aria-expanded") == "false"
+                    context.close()
             browser.close()
     finally:
         server.shutdown()
