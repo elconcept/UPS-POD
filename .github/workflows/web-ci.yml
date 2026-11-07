@@ -1,0 +1,38 @@
+name: UPS POD web lint and end-to-end
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "tests_web/**"
+      - "Dockerfile"
+      - "compose.yaml"
+      - "requirements-web.txt"
+      - "requirements-dev.txt"
+      - "ruff.toml"
+      - ".github/workflows/web-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Ruff and end-to-end on UPS simulator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Ruff
+        run: ruff check web tests_web
+      - name: Prepare browser for real HTML to PDF test
+        run: python -m playwright install --with-deps chromium
+      - name: Unit + end-to-end HTTP/SQLite/mock UPS/PDF/ZIP
+        run: python -m pytest -q tests_web -v
