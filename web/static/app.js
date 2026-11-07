@@ -51,9 +51,9 @@ const EXTRA_COLUMNS = [
 ];
 const COLUMN_KEYS = [...BASE_COLUMNS, ...EXTRA_COLUMNS.map(([key]) => key)];
 const columnLabels = {
-  fba: "Shipment ID Amazon FBA", tracking: "Numer UPS", ship_date: "Data nadania",
+  fba: "Shipment ID", tracking: "Numer UPS", ship_date: "Data nadania",
   delivery_date: "Data doręczenia", weight: "Waga", ups_status: "Status UPS",
-  queue: "Kolejka", document: "Dokument"
+  queue: "API", document: "Dokument"
 };
 for (const [key, label] of EXTRA_COLUMNS) columnLabels[key] = label;
 const DEFAULT_VISIBLE = BASE_COLUMNS.filter((key) => key !== "weight");
@@ -112,6 +112,7 @@ function saveColumnPrefs() {
 // Fill the entire available grid width; overflow horizontally only when the
 // sum of column minimums is larger than the viewport (typically on mobile).
 // The queue/PDF columns expand much less than tracking and FBA fields.
+const SELECT_COLUMN_WIDTH = 44;
 const COLUMN_GROW = {
   fba: 2.0, tracking: 2.0, ship_date: 0.9, delivery_date: 1.0,
   weight: 0.7, ups_status: 0.9, queue: 0.12, document: 0.5
@@ -122,8 +123,9 @@ function applyColumnWidths() {
   const keys = columnOrder.filter((key) => visibleColumns.has(key));
   const baseTotal = keys.reduce((sum, key) => sum + columnWidths[key], 0);
   const containerWidth = wrapper?.clientWidth || 0;
-  const targetWidth = Math.max(baseTotal, containerWidth);
-  const extra = Math.max(0, targetWidth - baseTotal);
+  const available = Math.max(0, containerWidth - SELECT_COLUMN_WIDTH);
+  const targetWidth = Math.max(baseTotal, available) + SELECT_COLUMN_WIDTH;
+  const extra = Math.max(0, available - baseTotal);
   const growTotal = keys.reduce((sum, key) => sum + (COLUMN_GROW[key] || 1), 0);
   const actualWidths = {};
   let allocated = 0;
@@ -169,7 +171,7 @@ function applyColumnOrder() {
     filters.append(filters.querySelector('[data-col="' + key + '"]'));
   }
   for (const row of table.tBodies[0].rows) {
-    if (row.cells.length !== COLUMN_KEYS.length) continue;
+    if (row.cells.length !== COLUMN_KEYS.length + 1) continue;
     for (const key of columnOrder)
       row.append(row.querySelector('[data-col="' + key + '"]'));
   }
@@ -240,16 +242,15 @@ function initColumns() {
     th.title = EXTRA_COLUMNS.find(([candidate]) => candidate === key)?.[2] || "";
     header.append(th);
   }
-  [...header.cells].forEach((th, index) => {
+  const fixedFilter = document.createElement("th");
+  fixedFilter.className = "selection-filter";
+  fixedFilter.setAttribute("aria-hidden", "true");
+  filterRow.append(fixedFilter);
+  [...header.cells].slice(1).forEach((th, index) => {
     const key = COLUMN_KEYS[index];
     th.dataset.col = key;
     th.classList.add("column-header");
-    const check = key === "fba" ? $("select-page") : null;
     th.replaceChildren();
-    if (check) {
-      check.title = "Zaznacz wszystkie przesyłki na bieżącej stronie";
-      th.append(check);
-    }
     const sort = document.createElement("button");
     sort.type = "button";
     sort.className = "sort-header";
@@ -440,12 +441,50 @@ function addCell(tr, text, className = "") {
   return cell;
 }
 
+function makeQueueIcon(kind) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "17");
+  svg.setAttribute("height", "17");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2.2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const drawings = {
+    done: [["path", "M20 6 9 17l-5-5"]],
+    queued: [["circle", {cx:12, cy:12, r:9}], ["path", "M12 7v5l3 2"]],
+    "in-progress": [["path", "M20 11a8 8 0 0 0-14-5l-2 2"],
+                    ["path", "M4 3v5h5"],
+                    ["path", "M4 13a8 8 0 0 0 14 5l2-2"],
+                    ["path", "M20 21v-5h-5"]],
+    exception: [["path", "M10.3 3.4a2 2 0 0 1 3.4 0l8.1 14.3a2 2 0 0 1-1.7 3H3.9a2 2 0 0 1-1.7-3z"],
+                ["path", "M12 9v5"], ["path", "M12 18h.01"]],
+    error: [["circle", {cx:12, cy:12, r:9}], ["path", "M9 9l6 6M15 9l-6 6"]],
+    "document-waiting": [["rect", {x:4, y:3, width:16, height:18, rx:2}],
+                         ["path", "M8 9h8M8 13h8M8 17h4"]],
+  };
+  for (const [shape, data] of (drawings[kind] || drawings.queued)) {
+    const node = document.createElementNS(ns, shape);
+    if (typeof data === "string") node.setAttribute("d", data);
+    else for (const [key, value] of Object.entries(data))
+      node.setAttribute(key, String(value));
+    svg.append(node);
+  }
+  return svg;
+}
+
 function statusInfo(row) {
   if (row.state === "ready") return ["POD pobrany", "ready", "Zarchiwizowano dokument POD"];
   if (row.state === "processing") return ["Pobieranie…", "processing", "Trwa komunikacja z UPS"];
+  const businessEvent = ["I", "X", "U"].includes(row.ups_status_code)
+    && /on the way|delayed|reschedul|w drodze|opóźn|doręcz/i.test(row.ups_status || "");
   if (row.state === "retry" && (row.error === "Przesyłka jeszcze niedoręczona."
+      || (!row.error && businessEvent)
       || /w drodze|w tranzycie|in transit/i.test(row.ups_status || row.description)))
-    return ["W drodze", "waiting", row.description || row.error];
+    return ["Oczekuje na aktualizację UPS", "waiting", row.ups_detail_pl || row.error];
   if (row.state === "retry") return ["Brak POD / ponowienie", "retry", row.error || "Nie udało się pobrać dokumentu"];
   return ["W kolejce", "queued", "Oczekuje na automatyczne przetworzenie"];
 }
@@ -475,7 +514,7 @@ function renderRows() {
   tbody.replaceChildren();
   if (!rows.length) {
     const tr = document.createElement("tr");
-    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = visibleColumns.size;
+    addCell(tr, "Brak przesyłek w wybranym miesiącu.", "empty").colSpan = visibleColumns.size + 1;
     tbody.append(tr);
   }
   for (const row of rows) {
@@ -498,7 +537,12 @@ function renderRows() {
       else selected.delete(row.tracking);
       renderRows();
     });
-    // Data columns: FBA, UPS, ship date, delivery date, weight, UPS status, queue, document.
+    // Selection is a permanent leading column, outside user-defined order.
+    const selectionCell = document.createElement("td");
+    selectionCell.className = "selection-cell";
+    selectionCell.append(tick);
+    tr.append(selectionCell);
+    // Reorderable data columns start after the fixed checkbox.
     const fbaCell = document.createElement("td");
     fbaCell.className = "fba-cell";
     const fbaValue = document.createElement("button");
@@ -508,7 +552,7 @@ function renderRows() {
     fbaValue.title = "Kliknij, aby edytować Shipment ID Amazon FBA";
     fbaValue.setAttribute("aria-label", "Edytuj FBA dla " + row.tracking);
     fbaValue.addEventListener("click", () => editFba(row));
-    fbaCell.append(tick, fbaValue);
+    fbaCell.append(fbaValue);
     tr.append(fbaCell);
 
     const trackCell = document.createElement("td");
@@ -549,24 +593,19 @@ function renderRows() {
 
     const upsCell = document.createElement("td");
     const upsTag = document.createElement("span");
-    const upsText = row.ups_status || "Bez statusu";
+    const upsText = row.ups_status_pl || "Bez statusu";
     upsTag.textContent = upsText;
     const lowerStatus = upsText.toLocaleLowerCase("pl-PL");
     const upsKind = row.ups_status_code === "D" || /doręczon|dostarczon|delivered/.test(lowerStatus)
       ? "ready"
-      : row.ups_status_code === "X" || /wyjątek|problem|błąd|rescheduled|delay|exception|failed/.test(lowerStatus)
+      : row.ups_status_code === "X" || /wyjątek|problem|błąd|rescheduled|delay|exception|failed|opóźn|przełożon|zmieniono termin|zlecono zmianę/.test(lowerStatus)
       ? "retry" : /w drodze|w tranzycie|transport|on the way|in transit/.test(lowerStatus)
       ? "processing" : "queued";
     upsTag.className = "status ups-status " + upsKind;
-    const statusDetails = [
-      upsText,
-      row.ups_status_detail && row.ups_status_detail !== upsText ? row.ups_status_detail : "",
-      row.ups_status_code ? "Typ UPS: " + row.ups_status_code : "",
-      row.ups_tracking_code ? "Status: " + row.ups_tracking_code : "",
-      row.ups_event_code ? "Zdarzenie: " + row.ups_event_code : "",
-      row.description && row.description !== upsText && row.description !== row.ups_status_detail
-        ? row.description : "",
-    ].filter(Boolean).join(" · ");
+    // Only operator-facing Polish text. Raw technical codes stay in SQLite
+    // and in optional advanced API columns, never in the ordinary tooltip.
+    const detail = row.ups_detail_pl || "Szczegóły dostępne na stronie UPS.";
+    const statusDetails = upsText + (detail ? "\n" + detail : "");
     upsTag.dataset.tooltip = statusDetails;
     upsTag.setAttribute("aria-label", statusDetails);
     upsTag.tabIndex = 0;
@@ -580,18 +619,21 @@ function renderRows() {
     const late = isPastDeliveryDate(row);
     const queueKind = row.state === "ready" ? "done"
       : row.state === "processing" ? "in-progress"
-      : late ? "exception"
+      : late || (row.ups_status_code === "X" && info[1] === "waiting") ? "exception"
       : row.state === "retry" && info[1] === "retry" ? "error"
       : "queued";
     const queueLabel = {
-      done: "POD pobrany", "in-progress": "Przetwarzanie",
-      exception: "Przekroczony termin, brak potwierdzenia",
-      error: "Błąd przetwarzania", queued: "W kolejce"
+      done: "POD pobrany — operacja zakończona",
+      "in-progress": "Trwa komunikacja z API UPS",
+      exception: "Opóźnienie — planowany termin minął, brak potwierdzenia",
+      error: "Błąd komunikacji lub pobierania POD",
+      queued: "Oczekuje na kolejne sprawdzenie w API UPS"
     }[queueKind];
-    queueTag.className = "queue-dot " + queueKind;
+    queueTag.className = "queue-icon " + queueKind;
+    queueTag.append(makeQueueIcon(queueKind));
     queueTag.setAttribute("role", "img");
     queueTag.setAttribute("aria-label", queueLabel);
-    queueTag.title = queueLabel + " · " + (row.error || row.description || info[2]);
+    queueTag.title = queueLabel + " · " + (row.error || row.ups_detail_pl || info[2]);
     statusCell.append(queueTag);
     tr.append(statusCell);
 
@@ -638,7 +680,12 @@ function renderRows() {
       bubble.type = "button";
       bubble.className = "status document-bubble " + (info[1] === "waiting" ? "waiting"
         : info[1] === "retry" ? "retry" : "queued");
-      bubble.textContent = info[1] === "retry" ? "Błąd" : "Oczekuje";
+      if (info[1] === "retry") {
+        bubble.textContent = "Błąd";
+      } else {
+        bubble.classList.add("document-waiting-icon");
+        bubble.append(makeQueueIcon("document-waiting"));
+      }
       bubble.title = "Próby: " + row.attempts + " · Ostatnio: " + last + next
         + (row.error ? " · " + row.error : "");
       bubble.setAttribute("aria-label", "Historia operacji " + row.tracking);
@@ -652,7 +699,7 @@ function renderRows() {
       const cell = addCell(tr, value, "extra-cell");
       cell.title = label + ": " + value;
     }
-    [...tr.cells].forEach((cell, index) => { cell.dataset.col = COLUMN_KEYS[index]; });
+    [...tr.cells].slice(1).forEach((cell, index) => { cell.dataset.col = COLUMN_KEYS[index]; });
     tbody.append(tr);
   }
   $("page-info").textContent = total
@@ -745,8 +792,28 @@ async function refresh() {
     selector.value = activeMonth;
     $("count-total").textContent = payload.stats.total;
     $("count-ready").textContent = payload.stats.ready;
-    $("count-active").textContent = payload.stats.queued + payload.stats.processing;
-    $("count-retry").textContent = payload.stats.retry;
+    $("count-pending-year").textContent = payload.stats.pending_year;
+    $("stats-year").textContent = String(payload.stats.year);
+    $("count-delayed").textContent = payload.stats.delayed;
+    $("count-onway").textContent = payload.stats.on_way_or_rescheduled;
+    $("onway-breakdown").textContent =
+      "w drodze " + payload.stats.on_way + " · przełożone " + payload.stats.rescheduled;
+    $("count-pending").textContent = payload.stats.pending;
+    const months = $("pending-months");
+    months.replaceChildren();
+    for (const bucket of (payload.stats.pending_months || [])) {
+      const element = document.createElement("span");
+      element.className = "month-count" + (bucket.pending ? " nonzero" : "");
+      element.title = "Bez pobranego POD; miesiąc nadania wg UPS lub data importu";
+      const label = document.createElement("span");
+      label.textContent = new Intl.DateTimeFormat("pl-PL", {
+        month: "short", year: "numeric"
+      }).format(new Date(bucket.month + "-01T12:00:00"));
+      const value = document.createElement("strong");
+      value.textContent = String(bucket.pending);
+      element.append(label, value);
+      months.append(element);
+    }
     $("refresh-status").textContent = "Aktualizacja: " + new Date().toLocaleTimeString("pl-PL");
     renderRows();
   } catch (error) {

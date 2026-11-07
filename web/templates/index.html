@@ -117,11 +117,18 @@
   <th>Numer UPS</th><th>HTTP</th><th>Opis</th></tr></thead><tbody id="log-rows"></tbody></table></div>
   <button id="logs-older" type="button">Starsze wpisy</button></section>
   <div id="shipments-panel" role="tabpanel" aria-labelledby="tab-shipments">
-  <section class="stats" aria-label="Stan kolejki">
-    <article class="stat"><div>Wszystkie numery</div><strong id="count-total">—</strong></article>
-    <article class="stat good"><div>Potwierdzenia pobrane</div><strong id="count-ready">—</strong></article>
-    <article class="stat"><div>W kolejce / przetwarzanie</div><strong id="count-active">—</strong></article>
-    <article class="stat problem"><div>Do ponowienia</div><strong id="count-retry">—</strong></article>
+  <section class="stats" aria-label="Zestawienie przesyłek">
+    <article class="stat"><div>Wszystkie przesyłki</div><strong id="count-total">—</strong></article>
+    <article class="stat good"><div>POD pobrane</div><strong id="count-ready">—</strong></article>
+    <article class="stat"><div>Bez POD · <span id="stats-year">bieżący rok</span></div><strong id="count-pending-year">—</strong></article>
+    <article class="stat problem"><div>Opóźnione</div><strong id="count-delayed">—</strong></article>
+    <article class="stat"><div>W drodze / przełożone</div><strong id="count-onway">—</strong>
+      <span id="onway-breakdown" class="stat-detail" title="Nie obejmuje opóźnionych; rozłączne grupy">—</span></article>
+    <article class="stat"><div>Wszystkie bez POD</div><strong id="count-pending">—</strong></article>
+  </section>
+  <section class="pending-history" aria-label="Przesyłki bez POD w ostatnich sześciu miesiącach">
+    <span class="pending-history-title">Bez POD wg miesiąca nadania</span>
+    <div id="pending-months" class="pending-months"><span>Ładowanie…</span></div>
   </section>
   <section class="panel intake" id="intake-panel">
     <div class="section-head"><div><h2>Import UPS i Amazon FBA</h2><p>Jedno pole: numery UPS albo Shipment ID | numery UPS. Obsługiwane są także wielowierszowe dane z Excela.</p></div>
@@ -137,7 +144,7 @@
   </section>
   <section class="panel">
     <div class="section-head">
-      <div><h2>Potwierdzenia i statusy</h2><p>Lista jest zapisana w SQLite i aktualizowana automatycznie. Najedź na czerwony status, aby zobaczyć błąd.</p></div>
+      <div><h2>Potwierdzenia i statusy</h2><p>Lista jest zapisana w SQLite i aktualizowana automatycznie. Najedź na status, aby przeczytać szczegóły po polsku.</p></div>
       <span class="refresh" id="refresh-status">Odświeżanie co 7 s</span>
     </div>
     <p id="table-notice" class="table-notice" role="status" aria-live="polite" hidden></p>
@@ -164,9 +171,9 @@
     <div class="table-wrap">
       <table id="shipments-table">
         <thead><tr>
-          <th class="fba-header"><label><input type="checkbox" id="select-page" title="Zaznacz widoczne numery"><span>Shipment ID Amazon FBA</span></label></th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>Waga</th><th>Status UPS</th><th>Stan kolejki</th><th>Dokument</th>
+          <th class="selection-header" scope="col" aria-label="Zaznacz przesyłki"><input type="checkbox" id="select-page" title="Zaznacz widoczne przesyłki" aria-label="Zaznacz wszystkie przesyłki na stronie"></th><th>Shipment ID</th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>Waga</th><th>Status UPS</th><th title="Stan API UPS i pobierania POD">API</th><th>Dokument</th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="8" class="empty">Ładowanie przesyłek…</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="9" class="empty">Ładowanie przesyłek…</td></tr></tbody>
       </table>
     </div>
     <footer class="pagination">

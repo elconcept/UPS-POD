@@ -523,7 +523,7 @@ def test_removed_delivery_columns_from_web_table(application):
     script = (root / "web/static/app.js").read_text()
     for name in ("<th>Zdjęcie</th>", "<th>Godzina doręczenia</th>", "<th>Odebrał</th>"):
         assert name not in template
-    assert 'colspan="8"' in template
+    assert 'colspan="9"' in template
     assert "tr.append(photoCell)" not in script
     assert 'addCell(tr, row.received_by' not in script
 
@@ -565,8 +565,8 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
                 "#shipments-table thead tr:first-child .sort-header"
             ).evaluate_all("(nodes) => nodes.map((n) => n.firstChild.textContent)")
             assert headings[:8] == [
-                "Shipment ID Amazon FBA", "Numer UPS", "Data nadania",
-                "Data doręczenia", "Waga", "Status UPS", "Kolejka", "Dokument",
+                "Shipment ID", "Numer UPS", "Data nadania",
+                "Data doręczenia", "Waga", "Status UPS", "API", "Dokument",
             ]
             assert len(headings) == 24
             expect(page.locator('.column-header[data-col="weight"]')).to_be_hidden()
@@ -580,7 +580,7 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
             pill.hover()
             expect(page.locator(".ups-tooltip")).to_be_visible()
             expect(page.locator(".ups-tooltip")).to_contain_text("Nieprawidłowy adres")
-            expect(page.locator(".ups-tooltip")).to_contain_text("Typ UPS: X")
+            expect(page.locator(".ups-tooltip")).not_to_contain_text("Typ UPS")
             assert page.locator(f'#rows tr[data-tracking="{ready}"] .document-bubble').inner_text() == "↓ PDF"
 
             expect(page.locator("#intake-content")).to_be_hidden()
@@ -721,21 +721,22 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
 
             page.locator('.column-header[data-col="weight"] .column-grip').drag_to(
                 page.locator('.column-header[data-col="tracking"] .sort-header'))
-            expect(header.locator("th").nth(1)).to_have_attribute("data-col", "weight")
-            expect(page.locator("#rows tr").first.locator("td").nth(1)).to_have_attribute(
+            expect(header.locator("th").nth(0)).to_have_class("selection-header")
+            expect(header.locator("th").nth(2)).to_have_attribute("data-col", "weight")
+            expect(page.locator("#rows tr").first.locator("td").nth(2)).to_have_attribute(
                 "data-col", "weight")
             assert "weight" in page.evaluate('document.cookie')
             # Accessible reorder without a mouse, from the current position.
             page.locator('.column-header[data-col="fba"] .column-grip').focus()
             page.keyboard.press("Alt+ArrowRight")
-            expect(header.locator("th").nth(0)).to_have_attribute("data-col", "weight")
+            expect(header.locator("th").nth(1)).to_have_attribute("data-col", "weight")
 
             page.locator('.column-filter[data-col="fba"]').fill("FBATWO")
             expect(page.locator("#rows tr")).to_have_count(1)
             expect(page.locator("#rows tr").first).to_have_attribute("data-tracking", b)
             page.reload()
-            expect(header.locator("th").nth(0)).to_have_attribute("data-col", "weight")
-            expect(header.locator("th").nth(1)).to_have_attribute("data-col", "fba")
+            expect(header.locator("th").nth(1)).to_have_attribute("data-col", "weight")
+            expect(header.locator("th").nth(2)).to_have_attribute("data-col", "fba")
             expect(page.locator('.column-filter[data-col="fba"]')).to_have_value("FBATWO")
             expect(page.locator("#rows tr")).to_have_count(1)
             page.locator("#clear-column-filters").click()
@@ -908,7 +909,7 @@ def test_theme_and_configurable_columns_browser(application):
             assert page.locator(".topbar .top-status").count() == 0
             assert page.locator('link[rel="icon"]').get_attribute("href") == "/static/favicon.svg"
             assert page.request.get(f"http://127.0.0.1:{server.server_port}/static/favicon.svg").status == 200
-            assert page.locator("#rows .queue-dot").count() == 1
+            assert page.locator("#rows .queue-icon").count() == 1
 
             page.locator("#theme-toggle").click()
             assert page.evaluate("document.documentElement.dataset.theme") == "dark"
@@ -1229,6 +1230,155 @@ def test_tracking_table_fills_viewport_and_uses_page_vertical_scroll(application
                     assert full["tableWidth"] > full["wrapperWidth"]
                     assert abs(full["contentHeight"] - full["wrapperHeight"]) <= 1
                 context.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_polish_ups_statuses_and_monthly_pending_statistics(application):
+    import datetime as dt
+    import service
+    import ups_localization
+    from zoneinfo import ZoneInfo
+
+    current = dt.datetime.now(ZoneInfo("Europe/Warsaw"))
+    current_month = current.strftime("%Y-%m")
+    previous = (current.replace(day=1) - dt.timedelta(days=1)).strftime("%Y-%m")
+    numbers = [
+        "1Z004R316837162143", "1Z004R316839216224",
+        "1Z004R316805433991", "1Z004R316807294692",
+        "1Z004R316805636772",
+    ]
+    service.add_numbers(" ".join(numbers))
+    with service.connection() as db:
+        data = [
+            ("On the Way: Delayed", "X", "Delivery will be delayed by one business day.", "retry", current_month, numbers[0]),
+            ("Delayed", "I", "We’re sorry, delivery is taking longer than expected. Your package has been temporarily delayed.", "retry", previous, numbers[1]),
+            ("Delivery Rescheduled", "X", "Your delivery will be rescheduled.", "retry", current_month, numbers[2]),
+            ("On the Way", "I", "Departed from Facility", "retry", previous, numbers[3]),
+            ("Doręczono", "D", "", "ready", current_month, numbers[4]),
+        ]
+        db.executemany(
+            "UPDATE shipments SET ups_status=?,ups_status_code=?,"
+            "ups_status_detail=?,state=?,ship_date=? WHERE tracking=?",
+            [(s, kind, text, state, month + "-04", tracking)
+             for s, kind, text, state, month, tracking in data],
+        )
+    stats = service.stats()
+    assert stats["total"] == 5
+    assert stats["pending"] == 4
+    assert stats["ready"] == 1
+    assert stats["pending_year"] == 4
+    assert stats["delayed"] == 2
+    assert stats["on_way"] == 1
+    assert stats["rescheduled"] == 1
+    assert stats["on_way_or_rescheduled"] == 2
+    buckets = {x["month"]: x["pending"] for x in stats["pending_months"]}
+    assert buckets[current_month] == 2 and buckets[previous] == 2
+    assert len(buckets) == 6
+    a = service.list_numbers(column_filters={"ups_status": "opóźniona"})
+    assert a["total"] == 2
+    labels = {r["tracking"]: r for r in a["rows"]}
+    assert labels[numbers[0]]["ups_status_pl"] == "W drodze — opóźniona"
+    assert labels[numbers[1]]["ups_status_pl"] == "Opóźniona"
+    assert labels[numbers[0]]["ups_detail_pl"] == "Doręczenie opóźni się o jeden dzień roboczy."
+    assert "Typ UPS:" not in repr(labels)
+    assert ups_localization.status_pl("Reschedule Delivery Requested", "X") == (
+        "Zlecono zmianę terminu doręczenia"
+    )
+    assert ups_localization.detail_pl("Processing at UPS Facility", "W drodze") == (
+        "Przesyłka jest przetwarzana w sortowni UPS."
+    )
+
+
+def test_selection_column_fixed_icons_polish_and_full_width(application):
+    import datetime as dt
+    import service
+    from zoneinfo import ZoneInfo
+
+    a, b, c = (
+        "1Z004R316837162143", "1Z004R316839216224", "1Z004R316807294692"
+    )
+    service.add_numbers(" ".join((a, b, c)))
+    current = dt.datetime.now(ZoneInfo("Europe/Warsaw")).strftime("%Y-%m-%d")
+    with service.connection() as db:
+        db.execute(
+            "UPDATE shipments SET state='retry',ups_status='On the Way: Delayed',"
+            "ups_status_code='X',ups_status_detail='Delivery will be delayed by one business day.',"
+            "ship_date=? WHERE tracking=?", (current, a),
+        )
+        db.execute(
+            "UPDATE shipments SET state='retry',ups_status='Delayed',"
+            "ups_status_code='I',"
+            "ups_status_detail='We’re sorry, delivery is taking longer than expected. "
+            "Your package has been temporarily delayed.',"
+            "ship_date=? WHERE tracking=?", (current, b),
+        )
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            for width in [1440, 390]:
+                page = browser.new_page(viewport={"width": width, "height": 900})
+                page.goto(f"http://127.0.0.1:{server.server_port}")
+                page.locator("#month-filter").select_option("all")
+                expect(page.locator("#rows tr")).to_have_count(3)
+                first_header = page.locator("#shipments-table thead tr:first-child th").first
+                expect(first_header).to_have_class("selection-header")
+                expect(page.locator("#shipments-table thead .column-filters th").first).to_have_class("selection-filter")
+                expect(page.locator("#rows tr .selection-cell")).to_have_count(3)
+                assert page.locator("#rows tr .fba-cell input[type=checkbox]").count() == 0
+                expect(page.locator('.column-header[data-col="fba"] .sort-header')).to_contain_text("Shipment ID")
+                expect(page.locator('.column-header[data-col="queue"] .sort-header')).to_contain_text("API")
+
+                row_a = page.locator(f'#rows tr[data-tracking="{a}"]')
+                row_b = page.locator(f'#rows tr[data-tracking="{b}"]')
+                expect(row_a.locator(".ups-status")).to_have_text("W drodze — opóźniona")
+                expect(row_b.locator(".ups-status")).to_have_text("Opóźniona")
+                row_a.locator(".ups-status").hover()
+                expect(page.locator(".ups-tooltip")).to_contain_text(
+                    "Doręczenie opóźni się o jeden dzień roboczy."
+                )
+                for forbidden in ("Typ UPS:", "Status: 048", "Delivery will be delayed"):
+                    assert forbidden not in page.locator(".ups-tooltip").text_content()
+
+                assert page.locator("#rows .queue-icon svg").count() == 3
+                expect(page.locator(f'#rows tr[data-tracking="{c}"] .queue-icon')).to_have_attribute(
+                    "aria-label", "Oczekuje na kolejne sprawdzenie w API UPS")
+                pending_doc = page.locator(f'#rows tr[data-tracking="{c}"] .document-waiting-icon')
+                expect(pending_doc).to_be_visible()
+                assert pending_doc.text_content() == ""
+                assert pending_doc.locator("svg").count() == 1
+                # Numerical date columns share exactly the same typography.
+                fonts = row_a.evaluate("""node => {
+                    const ship = getComputedStyle(node.querySelector('[data-col="ship_date"]'));
+                    const delivery = getComputedStyle(node.querySelector('[data-col="delivery_date"]'));
+                    return [ship.fontFamily, delivery.fontFamily, ship.fontWeight, delivery.fontWeight];
+                }""")
+                assert fonts[0] == fonts[1] and fonts[2] == fonts[3]
+
+                page.locator(".column-header[data-col='fba'] .column-grip").drag_to(
+                    page.locator(".column-header[data-col='document'] .sort-header"))
+                expect(first_header).to_have_class("selection-header")
+                expect(page.locator("#rows tr").first.locator("td").first).to_have_class(
+                    "selection-cell")
+                page.locator("#select-page").check()
+                expect(page.locator("#rows tr .selection-cell input:checked")).to_have_count(3)
+                assert page.locator("#rows tr .fba-cell input").count() == 0
+                assert page.locator("#count-delayed").text_content() == "2"
+                assert page.locator("#count-pending-year").text_content() == "3"
+                assert page.locator("#pending-months .month-count").count() == 6
+                if width >= 1200:
+                    dimensions = page.evaluate("""() => {
+                        const wrap = document.querySelector('#shipments-panel .table-wrap');
+                        return [wrap.clientWidth,
+                          document.querySelector('#shipments-table').getBoundingClientRect().width]
+                    }""")
+                    assert abs(dimensions[0] - dimensions[1]) <= 2
+                page.close()
             browser.close()
     finally:
         server.shutdown()

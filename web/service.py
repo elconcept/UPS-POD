@@ -11,6 +11,8 @@ import re
 import shutil
 from zoneinfo import ZoneInfo
 import sqlite3
+
+import ups_localization
 from pathlib import Path
 
 DATA_DIR = Path(os.getenv("UPS_POD_HOME", "/data"))
@@ -276,15 +278,62 @@ def add_numbers(raw: str) -> dict:
 
 
 def stats() -> dict:
+    """Global POD and UPS-status counters; monthly buckets use UPS pickup dates.
+
+    Shipment ship_date is the UPS pickup date when available. Legacy rows
+    without a ship date use the date they entered the tracking queue. Missing
+    POD means state != ready, irrespective of retry scheduling.
+    """
+    today = dt.datetime.now(ZoneInfo("Europe/Warsaw"))
+    year = str(today.year)
+    month_keys = []
+    for shift in range(5, -1, -1):
+        index = today.year * 12 + today.month - 1 - shift
+        month_keys.append(f"{index // 12:04d}-{index % 12 + 1:02d}")
+    per_month = dict.fromkeys(month_keys, 0)
+    counts = {"ready": 0, "queued": 0, "processing": 0, "retry": 0}
+    pending_year = 0
+    delayed = 0
+    on_way = 0
+    rescheduled = 0
     with connection() as db:
-        rows = db.execute("SELECT state, COUNT(*) n FROM shipments GROUP BY state").fetchall()
-    counts = {r["state"]: r["n"] for r in rows}
+        records = db.execute(
+            "SELECT state,ups_status,ship_date,created_at FROM shipments"
+        ).fetchall()
+    for record in records:
+        state = record["state"]
+        counts[state] = counts.get(state, 0) + 1
+        if state == "ready":
+            continue
+        shipped = record["ship_date"] or record["created_at"]
+        month = shipped[:7]
+        if month.startswith(year + "-"):
+            pending_year += 1
+        if month in per_month:
+            per_month[month] += 1
+        raw = (record["ups_status"] or "").casefold()
+        if "delay" in raw or "opóźn" in raw:
+            delayed += 1
+        elif "reschedul" in raw or "przełożon" in raw:
+            rescheduled += 1
+        elif "on the way" in raw or "w drodze" in raw or "in transit" in raw:
+            on_way += 1
+    pending_total = sum(counts.values()) - counts.get("ready", 0)
     return {
         "total": sum(counts.values()),
         "ready": counts.get("ready", 0),
         "queued": counts.get("queued", 0),
         "processing": counts.get("processing", 0),
         "retry": counts.get("retry", 0),
+        "pending": pending_total,
+        "pending_year": pending_year,
+        "year": today.year,
+        "delayed": delayed,
+        "on_way": on_way,
+        "rescheduled": rescheduled,
+        "on_way_or_rescheduled": on_way + rescheduled,
+        "pending_months": [{"month": month, "pending": count}
+                           for month, count in per_month.items()],
     }
 
 
@@ -337,7 +386,16 @@ LIST_COLUMNS = {
      "weight": "CASE WHEN weight_value='' THEN '—' ELSE "
         "weight_value||' '||CASE weight_unit WHEN 'KGS' THEN 'kg' "
         "WHEN 'LBS' THEN 'lb' ELSE weight_unit END END",
-    "ups_status": "COALESCE(NULLIF(ups_status,''),'Bez statusu')",
+    "ups_status": "CASE "
+        "WHEN LOWER(ups_status)='on the way: delayed' THEN 'W drodze — opóźniona' "
+        "WHEN LOWER(ups_status)='delayed' THEN 'Opóźniona' "
+        "WHEN LOWER(ups_status)='on the way' THEN 'W drodze' "
+        "WHEN LOWER(ups_status)='delivery rescheduled' THEN 'Zmieniono termin doręczenia' "
+        "WHEN LOWER(ups_status)='reschedule delivery requested' "
+        "THEN 'Zlecono zmianę terminu doręczenia' "
+        "WHEN LOWER(ups_status)='out for delivery' THEN 'W doręczeniu' "
+        "WHEN LOWER(ups_status)='delivered' THEN 'Doręczono' "
+        "ELSE COALESCE(NULLIF(ups_status,''),'Bez statusu') END",
     "queue": "CASE WHEN state='ready' THEN 'POD pobrany' "
          "WHEN state='processing' THEN 'Pobieranie…' "
         "WHEN state='queued' THEN 'W kolejce' "
@@ -413,6 +471,7 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 200,
     result_rows = []
     for record in rows:
         row = dict(record)
+        row["ups_status_pl"], row["ups_detail_pl"] = ups_localization.presentation(row)
         try:
             raw = json.loads(row.pop("tracking_extras") or "{}")
             row["ups_extra"] = {key: str(raw.get(key, ""))[:180]
