@@ -25,7 +25,7 @@ services:
     volumes:
       - /volume2/docker/ups-pod/data:/data
       - type: bind
-        source: /volume1/dokumentacja/UPS/POD
+        source: /volume1/data/UPS/POD
         target: /pod
         bind:
           create_host_path: false
