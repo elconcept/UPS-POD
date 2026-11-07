@@ -280,7 +280,8 @@ def analizuj(kod, js, tekst):
     """Sprowadza odpowiedź UPS do słownika używanego przez aplikację."""
     w = {'ok': False, 'nie_znaleziono': False, 'blad': '', 'doreczono': False, 'opis': '',
          'pod': None, 'pod_typ': '', 'podpis': False, 'relacja': [], 'data_dor': '', 'godz_dor': '',
-         'odebral': '', 'miejsce': ''}
+         'odebral': '', 'miejsce': '', 'status': '', 'status_typ': '',
+         'ship_date': '', 'ship_date_source': ''}
     if kod == 200 and isinstance(js, dict) and 'trackResponse' in js:
         shipy = (js.get('trackResponse') or {}).get('shipment') or []
         sh = shipy[0] if shipy else {}
@@ -299,6 +300,10 @@ def analizuj(kod, js, tekst):
         del_data = next((d for d in daty if isinstance(d, dict) and d.get('type') == 'DEL'), None)
         typ = str(cs.get('type') or st0.get('type') or '').upper()
         w['doreczono'] = typ == 'D' or str(st0.get('type', '')).upper() == 'D' or del_data is not None
+        w['status_typ'] = typ
+        w['status'] = {'D': 'Doręczono', 'I': 'W drodze', 'M': 'Etykieta utworzona',
+                       'MV': 'Etykieta anulowana', 'X': 'Wyjątek w doręczeniu',
+                       'U': 'Aktualizacja terminu'}.get(typ, '')
         w['opis'] = str(cs.get('description') or cs.get('simplifiedTextDescription') or st0.get('description')
                         or p.get('statusDescription') or 'Brak opisu statusu').strip()
         di = p.get('deliveryInformation') or {}
@@ -313,6 +318,34 @@ def analizuj(kod, js, tekst):
                 w['pod_typ'] = rozpoznaj_typ(w['pod'])
             except Exception:
                 w['pod'] = None
+        # Physical first acceptance by UPS, not the label/manifest creation date.
+        for activity in reversed(akt):
+            if not isinstance(activity, dict):
+                continue
+            ac_status = activity.get('status') or {}
+            if str(ac_status.get('code') or '').upper() in {'PU', 'OR', 'PC', 'PT'}:
+                date = data_ups(activity.get('date'))
+                if re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+                    w['ship_date'] = date
+                    w['ship_date_source'] = 'ups_pickup_scan'
+                    break
+        # Some original UPS POD HTML contains "Shipped or Billed on".
+        # This is a billed/shipped date, NOT guaranteed physical handover.
+        if not w['ship_date'] and w['pod_typ'] == 'html' and w['pod']:
+            from html import unescape
+            visible = unescape(re.sub(r'<[^>]*>', ' ', dekoduj_tekst(w['pod'])))
+            matched = re.search(
+                r'Shipped\s+or\s+Billed\s+on\s*:\s*([A-Za-z]{3}\s+\d{1,2},\s*\d{4})',
+                visible, re.IGNORECASE,
+            )
+            if matched:
+                try:
+                    w['ship_date'] = dt.datetime.strptime(
+                        matched.group(1).replace('  ', ' ').strip(), '%b %d, %Y'
+                    ).date().isoformat()
+                    w['ship_date_source'] = 'pod_shipped_or_billed'
+                except ValueError:
+                    pass
         if del_data:
             w['data_dor'] = data_ups(del_data.get('date'))
         elif w['doreczono'] and akt:
@@ -395,6 +428,8 @@ class KonwerterPDF:
             self._uruchom()
         strona = self._przegladarka.new_page()
         try:
+            # UPS POD HTML is untrusted; never load remote resources or leak its contents.
+            strona.route('**/*', lambda route: route.abort())
             try:
                 strona.set_content(html, wait_until='load', timeout=30000)
             except Exception:
@@ -426,6 +461,27 @@ def dekoduj_tekst(b):
     return b.decode('utf-8', 'replace')
 
 
+def uzupelnij_grafiki_pod(html):
+    """Resolve relative UPS graphics without external requests or modifying original HTML."""
+    logo_file = Path(__file__).with_name('ups-logo.svg')
+    if logo_file.is_file():
+        logo = 'data:image/svg+xml;base64,' + base64.b64encode(logo_file.read_bytes()).decode('ascii')
+        html = re.sub(r'(?i)(<img\b[^>]*\bsrc\s*=\s*["\'])\./?ups_logo\.gif(["\'])',
+                      lambda m: m.group(1) + logo + m.group(2), html)
+    else:
+        html = re.sub(r'(?i)<img\b[^>]*\bsrc\s*=\s*["\']\./?ups_logo\.gif["\'][^>]*>',
+                      '<span style="font-weight:bold">UPS</span>', html)
+    # The historical UPS banner image is not supplied by this endpoint. Use
+    # explicit text rather than a broken picture or a fabricated UPS graphic.
+    html = re.sub(
+        r'(?i)<img\b[^>]*\bsrc\s*=\s*["\']\./?ups_banner\.gif["\'][^>]*>',
+        '<span style="display:inline-block;border-bottom:2px solid #704214;'
+        'padding:9px 13px;font:bold 19px Arial;color:#704214">United Parcel Service</span>',
+        html,
+    )
+    return html
+
+
 def zapisz_pod(bajty, typ, cel, konwerter):
     """Zapisuje dokument POD z UPS jako PDF (zapis atomowy). Zwraca opis rodzaju."""
     cel.parent.mkdir(parents=True, exist_ok=True)
@@ -441,7 +497,7 @@ def zapisz_pod(bajty, typ, cel, konwerter):
                         % (typ, base64.b64encode(bajty).decode('ascii')))
                 rodzaj = 'obraz POD z UPS → PDF'
             elif typ == 'html':
-                html = dekoduj_tekst(bajty)
+                html = uzupelnij_grafiki_pod(dekoduj_tekst(bajty))
                 rodzaj = 'POD z UPS (HTML) → PDF'
             else:
                 t = dekoduj_tekst(bajty)
