@@ -155,15 +155,6 @@ function renderRows() {
       ? row.weight_value + " " + (row.weight_unit === "KGS" ? "kg"
         : row.weight_unit === "LBS" ? "lb" : row.weight_unit) : "—";
     addCell(tr, weightLabel, "weight-cell");
-    const showTime = (value) => /^\d{6}$/.test(value || "")
-      ? value.slice(0, 2) + ":" + value.slice(2, 4) : "";
-    const deliveryTime = row.delivery_time_start
-      ? showTime(row.delivery_time_start) + "–" + showTime(row.delivery_time_end)
-      : showTime(row.delivery_time_end) || "—";
-    const timeCell = addCell(tr, deliveryTime, "delivery-time");
-    timeCell.title = row.delivery_time_type === "DEL" ? "Potwierdzona godzina doręczenia"
-      : row.delivery_time_type === "EDW" ? "Przewidywane okno doręczenia (EDW)"
-      : row.delivery_time_type || "Brak informacji";
     const deliveryDay = row.delivery_date && /^\d{8}$/.test(row.delivery_date)
       ? row.delivery_date.slice(0, 4) + "-" + row.delivery_date.slice(4, 6)
         + "-" + row.delivery_date.slice(6) : "—";
@@ -229,7 +220,8 @@ async function refresh() {
     renderRows();
   } catch (error) {
     $("refresh-status").textContent = "Problem z połączeniem";
-    notice(error.message, true);
+    // Do not replace a successful import notification with a refresh error.
+    if ($("notice").hidden) notice(error.message, true);
   }
 }
 
@@ -251,6 +243,8 @@ $("intake-form").addEventListener("submit", async (event) => {
       + ". Pobieranie odbywa się automatycznie.");
     $("trackings").value = "";
     offset = 0;
+    // A failed background refresh must not relabel a successful import as failed.
+    // refresh() reports connection errors independently and does not throw.
     await refresh();
   } catch (error) { notice(error.message, true); }
   finally { button.disabled = false; }
