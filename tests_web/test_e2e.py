@@ -725,22 +725,22 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
             page.locator('.column-header[data-col="weight"] .column-grip').drag_to(
                 page.locator('.column-header[data-col="tracking"] .sort-header'))
             expect(header.locator("th").nth(0)).to_have_class("selection-header")
-            expect(header.locator("th").nth(2)).to_have_attribute("data-col", "weight")
-            expect(page.locator("#rows tr").first.locator("td").nth(2)).to_have_attribute(
+            expect(header.locator("th").nth(3)).to_have_attribute("data-col", "weight")
+            expect(page.locator("#rows tr").first.locator("td").nth(3)).to_have_attribute(
                 "data-col", "weight")
             assert "weight" in page.evaluate('document.cookie')
             # Accessible reorder without a mouse, from the current position.
             page.locator('.column-header[data-col="fba"] .column-grip').focus()
             page.keyboard.press("Alt+ArrowRight")
-            expect(header.locator("th").nth(1)).to_have_attribute("data-col", "weight")
+            expect(header.locator("th").nth(2)).to_have_attribute("data-col", "weight")
 
             page.locator("#column-filters-toggle").click()
             page.locator('.column-filter[data-col="fba"]').fill("FBATWO")
             expect(page.locator("#rows tr")).to_have_count(1)
             expect(page.locator("#rows tr").first).to_have_attribute("data-tracking", b)
             page.reload()
-            expect(header.locator("th").nth(1)).to_have_attribute("data-col", "weight")
-            expect(header.locator("th").nth(2)).to_have_attribute("data-col", "fba")
+            expect(header.locator("th").nth(2)).to_have_attribute("data-col", "weight")
+            expect(header.locator("th").nth(3)).to_have_attribute("data-col", "fba")
             expect(page.locator('.column-filter[data-col="fba"]')).to_have_value("FBATWO")
             expect(page.locator("#rows tr")).to_have_count(1)
             page.locator("#clear-column-filters").click()
@@ -757,7 +757,7 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
             expect(page.locator(f'#rows tr[data-tracking="{a}"] .fba-id')).to_have_text("FBANEWID")
 
             page.locator(f'#rows tr[data-tracking="{a}"] .support-send').click()
-            expect(page.locator("#table-notice")).to_contain_text("SMTP")
+            expect(page.locator("#table-notice")).to_contain_text("OAuth2")
             browser.close()
     finally:
         server.shutdown()
@@ -831,7 +831,7 @@ def test_ups_specific_status_and_safe_tracking_columns(application):
 
 def test_one_click_support_sends_once_without_claiming_delivery(application, monkeypatch):
     import service
-    import support_mail
+    import gmail_oauth
 
     tracking = "1Z004R316805433991"
     service.add_numbers(tracking)
@@ -839,8 +839,6 @@ def test_one_click_support_sends_once_without_claiming_delivery(application, mon
         db.execute("UPDATE shipments SET state='retry',delivery_date='20200101',"
                    "delivery_date_type='SDD',ups_status='Delivery Rescheduled',"
                    "ups_status_code='X' WHERE tracking=?", (tracking,))
-    for key in ("UPS_SUPPORT_SMTP_HOST", "UPS_SUPPORT_SMTP_FROM"):
-        monkeypatch.delenv(key, raising=False)
 
     with application.test_client() as client:
         client.get("/")
@@ -849,27 +847,15 @@ def test_one_click_support_sends_once_without_claiming_delivery(application, mon
         headers = {"X-CSRF-Token": csrf}
         missing = client.post(f"/api/support/{tracking}/send", json={}, headers=headers)
         assert missing.status_code == 503
-        assert missing.json["code"] == "SMTP_NOT_CONFIGURED"
+        assert missing.json["code"] == "GMAIL_OAUTH_REQUIRED"
 
         sent = []
-        class FakeSMTP:
-            def __init__(self, *args, **kwargs):
-                pass
-            def __enter__(self):
-                return self
-            def __exit__(self, *_):
-                return False
-            def ehlo(self):
-                pass
-            def starttls(self, **kwargs):
-                pass
-            def send_message(self, message):
-                sent.append(message)
-
-        monkeypatch.setenv("UPS_SUPPORT_SMTP_HOST", "smtp.example.test")
-        monkeypatch.setenv("UPS_SUPPORT_SMTP_FROM", "operator@example.test")
-        monkeypatch.setenv("UPS_SUPPORT_TO", "customer.service@ups.com")
-        monkeypatch.setattr(support_mail.smtplib, "SMTP", FakeSMTP)
+        monkeypatch.setattr(gmail_oauth, "status", lambda: {
+            "configured": True, "email": "worker@gmail.com",
+            "oauth_ready": True,
+        })
+        monkeypatch.setattr(gmail_oauth, "send", lambda msg:
+            (sent.append(msg), {"id": "gmail-confirmed-17"})[1])
         delivered = client.post(f"/api/support/{tracking}/send", json={}, headers=headers)
         assert delivered.status_code == 200, delivered.json
         assert delivered.json["sent"]
@@ -885,13 +871,11 @@ def test_one_click_support_sends_once_without_claiming_delivery(application, mon
         rows = client.get("/api/shipments").json["rows"]
         assert rows[0]["support_status"] == "sent"
 
-        monkeypatch.setenv("UPS_SUPPORT_TO", "attacker@example.test")
-        assert client.get("/api/shipments").json["support_configured"] is False
         with service.connection() as db:
             record = db.execute(
                 "SELECT status,message_id FROM support_cases WHERE tracking=?", (tracking,)
             ).fetchone()
-        assert record["status"] == "sent" and record["message_id"].startswith("<")
+        assert record["status"] == "sent" and record["message_id"] == "gmail-confirmed-17"
 
 
 def test_theme_and_configurable_columns_browser(application):
@@ -1083,7 +1067,7 @@ def test_support_can_send_via_google_without_smtp(application, monkeypatch):
                    "delivery_date_type='RDD',ups_status='Delivery Rescheduled',"
                    "ups_status_code='X' WHERE tracking=?", (tracking,))
     sent = support_mail.send_support(tracking)
-    assert sent["sent"] is True and sent["channel"] == "gmail"
+    assert sent["sent"] is True and sent["channel"] == "gmail_oauth"
     assert len(captured) == 1
     assert captured[0]["From"] == "verified-gmail-user@gmail.com"
     assert captured[0]["To"] == support_mail.OFFICIAL_CONTACT
@@ -1145,8 +1129,8 @@ def test_config_tab_plain_dates_and_mixed_zip_browser(application):
             expect(page.locator("#shipments-panel")).to_be_hidden()
             expect(page.locator("#logs-panel")).to_be_hidden()
             expect(page.locator("#ups-config-id")).to_be_visible()
-            expect(page.locator("#gmail-app-email")).to_be_visible()
-            expect(page.locator("#gmail-config-id")).to_be_hidden()
+            expect(page.locator("#gmail-connect")).to_be_visible()
+            assert page.locator("#gmail-config-id").count() == 0
             expect(page.locator("#gmail-connect")).to_be_disabled()
             assert page.locator("#tab-config").get_attribute("aria-selected") == "true"
             page.locator("#tab-shipments").click()
@@ -1287,12 +1271,12 @@ def test_polish_ups_statuses_and_monthly_pending_statistics(application):
     a = service.list_numbers(column_filters={"ups_status": "opóźniona"})
     assert a["total"] == 2
     labels = {r["tracking"]: r for r in a["rows"]}
-    assert labels[numbers[0]]["ups_status_pl"] == "W drodze — opóźniona"
+    assert labels[numbers[0]]["ups_status_pl"] == "Opóźniona"
     assert labels[numbers[1]]["ups_status_pl"] == "Opóźniona"
     assert labels[numbers[0]]["ups_detail_pl"] == "Doręczenie opóźni się o jeden dzień roboczy."
     assert "Typ UPS:" not in repr(labels)
     assert ups_localization.status_pl("Reschedule Delivery Requested", "X") == (
-        "Zlecono zmianę terminu doręczenia"
+        "Zmiana terminu"
     )
     assert ups_localization.detail_pl("Processing at UPS Facility", "W drodze") == (
         "Przesyłka jest przetwarzana w sortowni UPS."
@@ -1343,7 +1327,7 @@ def test_selection_column_fixed_icons_polish_and_full_width(application):
 
                 row_a = page.locator(f'#rows tr[data-tracking="{a}"]')
                 row_b = page.locator(f'#rows tr[data-tracking="{b}"]')
-                expect(row_a.locator(".ups-status")).to_have_text("W drodze — opóźniona")
+                expect(row_a.locator(".ups-status")).to_have_text("Opóźniona")
                 expect(row_b.locator(".ups-status")).to_have_text("Opóźniona")
                 row_a.locator(".ups-status").hover()
                 expect(page.locator(".ups-tooltip")).to_contain_text(
@@ -1497,40 +1481,25 @@ def test_pdf_thumbnail_first_page_cached_and_missing(application):
         assert missing.status_code == 404
 
 
-def test_gmail_app_password_config_and_login_without_gcp(application, monkeypatch):
-    import service
-    import support_mail
-
-    logins = []
-    class FakeSMTP:
-        def __init__(self, host, port, timeout=None, context=None):
-            assert host == "smtp.gmail.com" and port == 465
-        def __enter__(self): return self
-        def __exit__(self, *args): return None
-        def login(self, email, password): logins.append((email,password))
-    monkeypatch.setattr(support_mail.smtplib, "SMTP_SSL", FakeSMTP)
+def test_gmail_oauth_only_ui(application):
     with application.test_client() as client:
-        client.get("/")
+        html = client.get("/").get_data(as_text=True)
+        assert 'id="gmail-connect"' in html
+        assert 'id="gmail-app-form"' not in html
+        assert "Hasło aplikacji Gmail" not in html
+        assert "Zapisz Gmail" not in html
+        assert "brand-home" in html
         with client.session_transaction() as session:
-            token = session["csrf"]
-        endpoint = "/api/config/gmail-app"
-        payload = {"email": "office@electrosmart.pl",
-                   "app_password": "abcdefghijklmnop"}
-        response = client.post(endpoint, json=payload, headers={"X-CSRF-Token":token})
-        assert response.status_code == 200
-        assert "abcdefghijklmnop" not in response.get_data(as_text=True)
-        stored = (service.DATA_DIR / ".env").read_text()
-        assert "GMAIL_SMTP_APP_PASSWORD=abcdefghijklmnop" in stored
-        status = client.get("/api/config").json["gmail_app"]
-        assert status["configured"] and status["email"] == payload["email"]
-        verified = client.post("/api/config/gmail-app/check",
-                               json={}, headers={"X-CSRF-Token":token})
-        assert verified.status_code == 200
-        assert verified.json["email"] == payload["email"]
-        assert logins == [(payload["email"], payload["app_password"])]
-        assert client.post(endpoint, json={"email":"bad","app_password":""},
-                           headers={"X-CSRF-Token":token}).status_code == 400
-        assert (service.DATA_DIR / ".env").stat().st_mode & 0o777 == 0o600
+            headers = {"X-CSRF-Token": session["csrf"]}
+        assert client.post("/api/config/gmail-app",
+                           json={},headers=headers).status_code == 404
+        assert client.post("/api/config/gmail-app/check",
+                           json={},headers=headers).status_code == 404
+        status = client.get("/api/config").json["gmail"]
+        assert not status["configured"]
+        assert not status["oauth_ready"]
+        assert client.post("/api/config/gmail/start",
+                           json={},headers=headers).status_code == 422
 
 
 def test_full_width_24_columns_filter_visibility_resizer_and_xlsx_browser(application):
@@ -1610,7 +1579,7 @@ def test_full_width_24_columns_filter_visibility_resizer_and_xlsx_browser(applic
                     page.locator(f'#rows tr[data-tracking="{first}"] .pod-thumb-button').hover()
                     expect(page.locator(".pod-preview")).to_be_visible()
                     assert page.locator(".pod-preview img").get_attribute("src").endswith(
-                        f"/api/shipments/{first}/thumbnail")
+                        f"/api/shipments/{first}/thumbnail?size=large")
                     img = page.request.get(
                         f"http://127.0.0.1:{server.server_port}/api/shipments/{first}/thumbnail")
                     assert img.status == 200 and img.body().startswith(b"\x89PNG")
@@ -1743,9 +1712,9 @@ def test_month_buttons_tool_groups_reset_and_column_picker(application):
                 page.locator("#columns-done").click()
                 page.locator('.column-header[data-col="fba"] .column-grip').focus()
                 page.keyboard.press("Alt+ArrowRight")
-                expect(page.locator("#shipments-table thead tr:first-child th").nth(2)).to_have_attribute("data-col","fba")
+                expect(page.locator("#shipments-table thead tr:first-child th").nth(3)).to_have_attribute("data-col","fba")
                 page.locator("#default-view").click()
-                expect(page.locator("#shipments-table thead tr:first-child th").nth(1)).to_have_attribute("data-col","fba")
+                expect(page.locator("#shipments-table thead tr:first-child th").nth(2)).to_have_attribute("data-col","fba")
                 expect(page.locator('.column-header[data-col="weight"]')).to_be_hidden()
                 assert page.evaluate(
                     "document.documentElement.scrollWidth <= window.innerWidth + 1")
@@ -1836,8 +1805,8 @@ def test_browser_1500_rows_double_pager_kpi_fixed_api_and_pod_thumbnail(applicat
             expect(page.locator("#page-size")).to_have_value("1500")
             assert "1500 z 1510" in page.locator("#page-info-top").inner_text()
             assert page.locator("#page-info-top").inner_text()==page.locator("#page-info").inner_text()
-            assert page.locator("#shipments-table thead tr:first-child th").last.inner_text()=="API"
-            assert page.locator("#shipments-table #rows tr").first.locator("td").last.get_attribute("data-fixed")=="api"
+            assert page.locator("#shipments-table thead tr:first-child th").nth(1).inner_text()=="API"
+            assert page.locator("#shipments-table #rows tr").first.locator("td").nth(1).get_attribute("data-fixed")=="api"
             assert page.locator("#columns-picker .column-choice").filter(has_text="API").count()==0
             assert page.locator('.api-fixed-header').evaluate(
                 "(el)=>getComputedStyle(el).position")=="sticky"
@@ -1849,7 +1818,7 @@ def test_browser_1500_rows_double_pager_kpi_fixed_api_and_pod_thumbnail(applicat
             thumb.hover()
             expect(page.locator(".pod-preview")).to_be_visible()
             assert page.locator(".pod-preview img").get_attribute("src").endswith(
-                "/api/shipments/"+first+"/thumbnail")
+                "/api/shipments/"+first+"/thumbnail?size=large")
             page.locator("#next-page-top").click()
             expect(page.locator("#rows tr")).to_have_count(10)
             expect(page.locator("#next-page")).to_be_disabled()
@@ -1913,8 +1882,8 @@ def test_responsive_toolbar_no_button_wrapping_390_to_1920(application):
                           rail:{left:r.left,right:r.right,top:r.top,width:r.width},
                           buttons, first:document.querySelector('.action-main').getBoundingClientRect().top,
                           monthCount:document.querySelectorAll('#pending-months button').length,
-                          apiRight:document.querySelector('.api-fixed-header').getBoundingClientRect().right,
-                          tableRight:document.querySelector('#shipments-table').getBoundingClientRect().right};
+                          apiLeft:document.querySelector('.api-fixed-header').getBoundingClientRect().left,
+                          selectRight:document.querySelector('.selection-header').getBoundingClientRect().right};
                     }""")
                     assert metrics["doc"] <= width+2, metrics
                     assert metrics["monthCount"] == 13
@@ -1925,7 +1894,7 @@ def test_responsive_toolbar_no_button_wrapping_390_to_1920(application):
                     assert all(b["right"] <= metrics["rail"]["right"] + 2
                                and b["x"] >= metrics["rail"]["left"] - 2
                                for b in metrics["buttons"]), metrics
-                    assert abs(metrics["apiRight"]-metrics["tableRight"]) <= 2, metrics
+                    assert abs(metrics["apiLeft"]-metrics["selectRight"]) <= 2, metrics
                     assert page.locator('.stat-action').count() == 6
                     assert page.locator(".pending-history-title").inner_text() == "Brak POD"
                     assert page.locator("#column-filters-toggle").get_attribute("aria-expanded") == "false"
@@ -1942,8 +1911,7 @@ def test_staff_gmail_and_notification_outbox(application, monkeypatch):
     from zoneinfo import ZoneInfo
     import notifications
     import service
-    import support_mail
-    import config_store
+    import gmail_oauth
 
     numbers = ["1Z" + f"{i:016d}" for i in (411, 412, 413)]
     service.add_numbers(" ".join(numbers))
@@ -1963,25 +1931,17 @@ def test_staff_gmail_and_notification_outbox(application, monkeypatch):
         employee={"name":"Anna Kowalska","email":"worker@example.org"}
         assert client.post("/api/config/employee",json=employee,headers=headers).status_code==200
         assert client.get("/api/config").json["employee"]==employee
-        cfg={"email":"office@example.org","app_password":"abcdefghijklmnop"}
-        assert client.post("/api/config/gmail-app",json=cfg,headers=headers).status_code==200
         assert not notifications.available()
-        class SMTP:
-            def __init__(self,*args,**kwargs): pass
-            def __enter__(self): return self
-            def __exit__(self,*args): return None
-            def login(self,u,p): assert u==cfg["email"]
-        monkeypatch.setattr(support_mail.smtplib,"SMTP_SSL",SMTP)
-        assert client.post("/api/config/gmail-app/check",
-                           json={},headers=headers).status_code==200
+        monkeypatch.setattr(gmail_oauth,"status", lambda: {
+            "configured":True,"email":"office@example.org","oauth_ready":True})
         assert notifications.available()
         rows=client.get("/api/shipments?month=all").json["rows"]
         assert next(r for r in rows if r["tracking"]==numbers[0])["support_eligible"]
     service.save_tracking_detail(numbers[2],{"status":"Delivered","status_typ":"D"})
     assert notifications.queue_overdue()==2
     sent=[]
-    monkeypatch.setattr(support_mail,"_send_smtp",
-                        lambda cfg,msg: sent.append(msg))
+    monkeypatch.setattr(gmail_oauth,"send",
+                        lambda msg:(sent.append(msg),{"id":"test-id"})[1])
     assert notifications.tick()==3
     assert len(sent)==1
     assert "Anna Kowalska" in sent[0].get_content()
@@ -1991,7 +1951,7 @@ def test_staff_gmail_and_notification_outbox(application, monkeypatch):
     with service.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM mail_notifications "
                           "WHERE state='sent'").fetchone()[0]==3
-    config_store.update({"GMAIL_SMTP_APP_PASSWORD":"qrstuvwxyzabcdef"})
+    monkeypatch.setattr(gmail_oauth,"status", lambda: {"configured":False})
     assert not notifications.available()
 
 
@@ -2092,8 +2052,112 @@ def test_browser_mail_icon_employee_home_and_autofit_responsive(application):
                 assert page.evaluate('document.cookie.includes("ups_pod_column_widths=")')
                 page.locator("#tab-config").click()
                 expect(page.locator("#employee-config-form")).to_be_visible()
-                expect(page.locator("#gmail-app-form")).to_be_visible()
-                expect(page.locator(".gmail-advanced")).to_be_hidden()
+                expect(page.locator("#gmail-oauth-help")).to_be_visible()
+                assert page.locator(".gmail-advanced").count() == 0
+                context.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+def test_v9_api_left_status_palette_large_pod_preview_and_oauth_ui(application):
+    import datetime as dt
+    import struct
+    from zoneinfo import ZoneInfo
+    import pymupdf
+    import service
+
+    numbers = ["1Z"+f"{i:016d}" for i in range(700,707)]
+    statuses = [
+        ("Delayed","X"), ("On the Way: Delayed","X"),
+        ("Delivery Rescheduled","X"), ("Reschedule Delivery Requested","X"),
+        ("Returned to Sender","X"), ("On the Way","I"), ("Delivered","D"),
+    ]
+    service.add_numbers(" ".join(numbers))
+    today = dt.datetime.now(ZoneInfo("Europe/Warsaw")).strftime("%Y-%m-%d")
+    with service.connection() as db:
+        for tracking,(status,kind) in zip(numbers,statuses,strict=True):
+            db.execute("UPDATE shipments SET state='retry',ups_status=?,ups_status_code=?,"
+                       "ship_date=? WHERE tracking=?",(status,kind,today,tracking))
+    doc=pymupdf.open()
+    page=doc.new_page(width=595,height=842)
+    page.insert_text((40,40),"UPS POD - first page zoom",fontsize=14)
+    target=service.document_target(numbers[-1])
+    target.write_bytes(doc.tobytes())
+    doc.close()
+    service.mark_ready(numbers[-1],"Doręczono","",str(target),"","pdf","checksum")
+    from pod_thumbnail import thumbnail
+    small = thumbnail(numbers[-1],large=False)
+    big = thumbnail(numbers[-1],large=True)
+    assert small and big
+    small_size=struct.unpack(">II",small.read_bytes()[16:24])
+    big_size=struct.unpack(">II",big.read_bytes()[16:24])
+    assert big_size[0] > small_size[0]*1.9
+
+    server=make_server("127.0.0.1",0,application,threaded=True)
+    thread=threading.Thread(target=server.serve_forever,daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as pw:
+            browser=pw.chromium.launch()
+            for theme in ("light","dark"):
+                context=browser.new_context(viewport={"width":1440,"height":940})
+                context.add_cookies([
+                    {"name":"ups_pod_month","value":"all",
+                     "url":f"http://127.0.0.1:{server.server_port}"},
+                    {"name":"ups_pod_theme","value":theme,
+                     "url":f"http://127.0.0.1:{server.server_port}"},
+                ])
+                page=context.new_page()
+                page.goto(f"http://127.0.0.1:{server.server_port}")
+                expect(page.locator("#rows tr")).to_have_count(7)
+                headers=page.locator("#shipments-table thead tr:first-child th")
+                expect(headers.nth(0)).to_have_class("selection-header")
+                expect(headers.nth(1)).to_have_class("api-fixed-header")
+                expect(page.locator("#rows tr").first.locator("td").nth(1)).to_have_attribute("data-fixed","api")
+                expect(page.locator("#rows tr").first.locator("td").nth(2)).to_have_attribute("data-col","fba")
+                expect(page.locator("#rows .ups-status")).to_have_count(7)
+                classes=[]
+                for i,(_raw,_kind) in enumerate(statuses):
+                    status=page.locator(f'#rows tr[data-tracking="{numbers[i]}"] .ups-status')
+                    expect(status).to_have_text(["Opóźniona","Opóźniona","Zmiana terminu",
+                                                  "Zmiana terminu","Zwrot","W drodze","Doręczono"][i])
+                    classes.append(status.evaluate("(e)=>getComputedStyle(e).backgroundColor"))
+                assert classes[0]==classes[1]==classes[4]
+                assert classes[2]==classes[3]
+                assert len(set((classes[0],classes[2],classes[5],classes[6])))==4
+                ready=page.locator(f'#rows tr[data-tracking="{numbers[-1]}"] .document-bubble.ready')
+                expect(ready).to_be_visible()
+                doc_bg=ready.evaluate("(e)=>getComputedStyle(e).backgroundColor")
+                assert doc_bg not in set(classes)
+                waiting=page.locator(f'#rows tr[data-tracking="{numbers[0]}"] .document-waiting-icon')
+                wait_bg=waiting.evaluate("(e)=>getComputedStyle(e).backgroundColor")
+                assert wait_bg not in set(classes) and wait_bg != doc_bg
+                thumb=page.locator(f'#rows tr[data-tracking="{numbers[-1]}"] .pod-thumb-button')
+                thumb.hover()
+                panel=page.locator(".pod-preview")
+                expect(panel).to_be_visible()
+                assert panel.locator("img").get_attribute("src").endswith("thumbnail?size=large")
+                panel_rect=panel.bounding_box()
+                link_rect=thumb.bounding_box()
+                assert panel_rect and link_rect and panel_rect["width"]>550
+                cx=link_rect["x"]+link_rect["width"]/2
+                cy=link_rect["y"]+link_rect["height"]/2
+                assert not (panel_rect["x"]<=cx<=panel_rect["x"]+panel_rect["width"]
+                            and panel_rect["y"]<=cy<=panel_rect["y"]+panel_rect["height"])
+                assert page.locator(".brand-home").get_attribute("href")=="/"
+                page.locator("#columns-open").click()
+                assert page.locator(".column-choice").filter(has_text="API").count()==0
+                page.locator("#columns-done").click()
+                page.locator('.column-header[data-col="fba"] .column-grip').focus()
+                page.keyboard.press("Alt+ArrowRight")
+                expect(headers.nth(1)).to_have_class("api-fixed-header")
+                page.locator("#tab-config").click()
+                expect(page.locator("#gmail-connect")).to_be_visible()
+                expect(page.locator("#gmail-connect")).to_be_disabled()
+                assert page.locator("#gmail-app-form").count()==0
+                page.locator("#ups-config-form button[type=submit]").click()
+                expect(page.locator("#config-notice")).to_have_class("table-notice warning")
                 context.close()
             browser.close()
     finally:

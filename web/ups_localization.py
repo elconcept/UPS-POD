@@ -1,8 +1,8 @@
 """Human-readable Polish UPS tracking terminology.
 
-Keep raw UPS API strings unchanged in SQLite. These localized display values
-derive from the response and explicitly preserve distinctions between statuses
-such as On the Way: Delayed (exception) and Delayed (in transit).
+Keep raw UPS API strings unchanged in SQLite. Display labels intentionally
+group equivalent operator-facing statuses; detailed event text remains available
+in localized tooltips and original UPS response.
 """
 from __future__ import annotations
 
@@ -17,14 +17,19 @@ _STATUS = {
     "Delivered": "Doręczono",
     "Doręczono": "Doręczono",
     "On the Way": "W drodze",
-    "On the Way: Delayed": "W drodze — opóźniona",
+    "On the Way: Delayed": "Opóźniona",
     "Delayed": "Opóźniona",
-    "Delivery Rescheduled": "Zmieniono termin doręczenia",
-    "Reschedule Delivery Requested": "Zlecono zmianę terminu doręczenia",
+    "Delivery Rescheduled": "Zmiana terminu",
+    "Reschedule Delivery Requested": "Zmiana terminu",
     "Out for Delivery": "W doręczeniu",
     "Label Created": "Utworzono etykietę",
     "Shipment Ready for UPS": "Oczekuje na odbiór przez UPS",
     "Picked Up": "Odebrano przez UPS",
+    "Returned to Sender": "Zwrot",
+    "Return to Sender": "Zwrot",
+    "Returning to Sender": "Zwrot",
+    "Shipment Returned": "Zwrot",
+    "Zwrot": "Zwrot",
     "Exception": "Wyjątek w doręczeniu",
     "Wyjątek w doręczeniu": "Wyjątek w doręczeniu",
 }
@@ -62,9 +67,11 @@ def status_pl(value: str, type_code: str = "") -> str:
     if not key:
         return "Bez statusu"
     if "delay" in key or "opóźn" in key:
-        return "W drodze — opóźniona" if "on the way" in key else "Opóźniona"
-    if "reschedul" in key or "przełożon" in key:
-        return "Zmieniono termin doręczenia"
+        return "Opóźniona"
+    if "reschedul" in key or "przełożon" in key or "zmiana terminu" in key:
+        return "Zmiana terminu"
+    if "return" in key or "zwrot" in key:
+        return "Zwrot"
     if "on the way" in key or "transit" in key or "w drodze" in key:
         return "W drodze"
     if "deliver" in key or "doręcz" in key:
@@ -85,7 +92,8 @@ def detail_pl(value: str, status: str, type_code: str = "") -> str:
             "Doręczono": "UPS zarejestrował doręczenie przesyłki.",
             "W drodze": "Przesyłka jest transportowana w sieci UPS.",
             "Opóźniona": "UPS poinformował o opóźnieniu doręczenia.",
-            "W drodze — opóźniona": "Przesyłka jest w transporcie, ale doręczenie się opóźni.",
+            "Zmiana terminu": "UPS aktualizuje planowany termin doręczenia.",
+            "Zwrot": "UPS odnotował zwrot przesyłki do nadawcy.",
         }.get(status, "Szczegóły zdarzenia można sprawdzić na stronie UPS.")
     if "arrived" in key and "facility" in key:
         return "Przesyłka dotarła do oddziału UPS."

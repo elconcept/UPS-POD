@@ -105,7 +105,6 @@ def create_app(testing: bool = False) -> Flask:
     @web.get("/api/config")
     def config_status():
         return jsonify(**config_store.masked_status(), gmail=gmail_oauth.status(),
-                       gmail_app=support_mail.gmail_app_status(),
                        api_archive=service.tracking_payload_info(),
                        employee={"name": config_store.get("SUPPORT_STAFF_NAME"),
                                  "email": config_store.get("SUPPORT_NOTIFY_EMAIL")})
@@ -148,38 +147,6 @@ def create_app(testing: bool = False) -> Flask:
         return jsonify(saved=True, changed=changed,
                        employee={"name": config_store.get("SUPPORT_STAFF_NAME"),
                                  "email": config_store.get("SUPPORT_NOTIFY_EMAIL")})
-
-    @web.post("/api/config/gmail-app")
-    def config_gmail_app():
-        data = request.get_json(silent=True) or {}
-        email = str(data.get("email", "")).strip().lower()
-        secret = str(data.get("app_password", "")).replace(" ", "").strip()
-        try:
-            if email and not support_mail.MAIL_RE.fullmatch(email):
-                raise ValueError("Nieprawidłowy adres konta Gmail.")
-            if secret and (len(secret) != 16 or not secret.isalnum()):
-                raise ValueError("Hasło aplikacji Google powinno mieć 16 znaków.")
-            changed = config_store.update({
-                "GMAIL_SMTP_EMAIL": email,
-                "GMAIL_SMTP_APP_PASSWORD": secret,
-            })
-            if changed:
-                service.audit("user", "gmail_smtp_config_updated",
-                              description="Zapisano Gmail SMTP: " + ", ".join(changed))
-        except ValueError as exc:
-            return jsonify(error=str(exc)), 400
-        return jsonify(saved=True, changed=changed,
-                       gmail_app=support_mail.gmail_app_status())
-
-    @web.post("/api/config/gmail-app/check")
-    def config_gmail_app_check():
-        try:
-            verified = support_mail.gmail_app_check()
-        except support_mail.SupportNotConfigured as exc:
-            return jsonify(error=str(exc)), 422
-        service.audit("user", "gmail_smtp_verified",
-                      description="Gmail zaakceptował bezpieczne logowanie SMTP.")
-        return jsonify(verified)
 
     @web.post("/api/config/google")
     def config_google():
@@ -306,7 +273,7 @@ def create_app(testing: bool = False) -> Flask:
             result = support_mail.send_support(tracking.upper())
             return jsonify(result), 200
         except support_mail.SupportNotConfigured as exc:
-            return jsonify(error=str(exc), code="SMTP_NOT_CONFIGURED"), 503
+            return jsonify(error=str(exc), code="GMAIL_OAUTH_REQUIRED"), 503
         except support_mail.SupportIneligible as exc:
             return jsonify(error=str(exc), code="INELIGIBLE"), 422
         except support_mail.SupportAlreadySent as exc:
@@ -366,7 +333,10 @@ def create_app(testing: bool = False) -> Flask:
 
     @web.get("/api/shipments/<tracking>/thumbnail")
     def pod_preview(tracking: str):
-        target = pod_thumbnail.thumbnail(tracking.upper())
+        size = request.args.get("size", "small")
+        if size not in {"small", "large"}:
+            abort(400, "Nieobsługiwany rozmiar podglądu.")
+        target = pod_thumbnail.thumbnail(tracking.upper(), large=(size == "large"))
         if target is None:
             abort(404, "Brak dostępnej miniatury dokumentu POD.")
         return send_file(target, mimetype="image/png", max_age=0)

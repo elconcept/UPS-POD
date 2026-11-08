@@ -19,8 +19,7 @@ def recipient() -> str:
 
 
 def available() -> bool:
-    return bool(recipient() and (support_mail.gmail_app_verified()
-                or gmail_oauth.status()["configured"]))
+    return bool(recipient() and gmail_oauth.status()["configured"])
 
 
 def queue_overdue() -> int:
@@ -46,14 +45,13 @@ def queue_overdue() -> int:
 
 
 def tick() -> int:
-    """One aggregate notification per run. Unknown SMTP outcomes never retry."""
+    """One aggregate Gmail API notification. Unknown outcomes never retry."""
     if not available():
         return 0
     queue_overdue()
     email = recipient()
-    app = support_mail.gmail_app_config() if support_mail.gmail_app_verified() else None
     oauth = gmail_oauth.status()
-    if not app and not oauth["configured"]:
+    if not oauth["configured"]:
         return 0
     with service.connection() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -66,7 +64,7 @@ def tick() -> int:
         ids = [r["id"] for r in rows]
         db.executemany("UPDATE mail_notifications SET state='sending' WHERE id=?",
                        [(i,) for i in ids])
-    sender = app["email"] if app else oauth["email"]
+    sender = oauth["email"]
     message = EmailMessage()
     message["From"] = sender
     message["To"] = email
@@ -89,13 +87,7 @@ def tick() -> int:
     lines.extend(["", "Panel: https://ups.xlap.pl/", ""])
     message.set_content("\n".join(lines))
     try:
-        if app:
-            support_mail._send_smtp({
-                "security": "ssl", "host": "smtp.gmail.com", "port": 465,
-                "user": app["email"], "password": app["password"],
-            }, message)
-        else:
-            gmail_oauth.send(message)
+        gmail_oauth.send(message)
     except Exception as exc:
         # The server may have accepted the message before client timeout:
         # "uncertain" requires manual reconciliation with Gmail Sent.

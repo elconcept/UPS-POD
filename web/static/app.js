@@ -273,11 +273,12 @@ function applyColumnOrder() {
     if (row.cells.length !== COLUMN_KEYS.length + 2) continue;
     for (const key of columnOrder)
       row.append(row.querySelector('[data-col="' + key + '"]'));
-    row.append(row.querySelector('[data-fixed="api"]'));
+    const apiCell = row.querySelector('[data-fixed="api"]');
+    if (apiCell) row.insertBefore(apiCell, row.cells[1]);
   }
   for (const fixed of [head, filters, group]) {
     const api = fixed.querySelector('[data-fixed="api"]');
-    if (api) fixed.append(api);
+    if (api) fixed.insertBefore(api, fixed.children[1]);
   }
   for (const th of head.cells) {
     const key = th.dataset.col;
@@ -344,19 +345,19 @@ function initColumns() {
   $("column-filters-toggle").setAttribute("aria-expanded", String(!filterRow.hidden));
   filterRow.setAttribute("aria-label", "Filtry poszczególnych kolumn");
   let dragging = "";
-  const fixedApiHeader = header.lastElementChild;
+  const fixedApiHeader = header.querySelector(".api-fixed-header");
   fixedApiHeader.dataset.fixed = "api";
   for (const [key, label] of EXTRA_COLUMNS) {
     const th = document.createElement("th");
     th.textContent = label;
     th.title = EXTRA_COLUMNS.find(([candidate]) => candidate === key)?.[2] || "";
-    header.insertBefore(th, fixedApiHeader);
+    header.append(th);
   }
   const fixedFilter = document.createElement("th");
   fixedFilter.className = "selection-filter";
   fixedFilter.setAttribute("aria-hidden", "true");
   filterRow.append(fixedFilter);
-  [...header.cells].slice(1, -1).forEach((th, index) => {
+  [...header.cells].slice(2).forEach((th, index) => {
     const key = COLUMN_KEYS[index];
     th.dataset.col = key;
     th.classList.add("column-header");
@@ -479,7 +480,7 @@ function initColumns() {
     resize.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       event.preventDefault(); event.stopPropagation();
-      const available = Math.max(1, tableWrapper.clientWidth - SELECT_COLUMN_WIDTH);
+      const available = Math.max(1, tableWrapper.clientWidth - SELECT_COLUMN_WIDTH - API_COLUMN_WIDTH);
       const base = columnOrder.filter((field) => visibleColumns.has(field))
         .reduce((sum, field) => sum + columnWidths[field], 0);
       resizing = {
@@ -775,10 +776,13 @@ function renderRows() {
     const upsText = row.ups_status_pl || "Bez statusu";
     upsTag.textContent = upsText;
     const lowerStatus = upsText.toLocaleLowerCase("pl-PL");
-    const upsKind = row.ups_status_code === "D" || /doręczon|dostarczon|delivered/.test(lowerStatus)
+    const upsKind = /zmiana terminu/.test(lowerStatus)
+      ? "rescheduled"
+      : /zwrot|opóźn|wyjątek|problem|błąd|exception|failed/.test(lowerStatus)
+      ? "retry"
+      : row.ups_status_code === "D" || /doręczon|dostarczon|delivered/.test(lowerStatus)
       ? "ready"
-      : row.ups_status_code === "X" || /wyjątek|problem|błąd|rescheduled|delay|exception|failed|opóźn|przełożon|zmieniono termin|zlecono zmianę/.test(lowerStatus)
-      ? "retry" : /w drodze|w tranzycie|transport|on the way|in transit/.test(lowerStatus)
+      : /w drodze|w doręczeniu|w tranzycie|transport|on the way|in transit/.test(lowerStatus)
       ? "processing" : "queued";
     upsTag.className = "status ups-status " + upsKind;
     // Only operator-facing Polish text. Raw technical codes stay in SQLite
@@ -849,7 +853,7 @@ function renderRows() {
         + "i ewentualną korektę doręczenia dla " + row.tracking);
       support.title = supportConfigured
         ? "Wyślij prośbę do UPS o weryfikację doręczenia i aktualizację trackingu"
-        : "Skonfiguruj Gmail w ustawieniach, aby wysłać zgłoszenie";
+        : "Połącz konto Gmail przez OAuth2 w Konfiguracji";
       support.dataset.tracking = row.tracking;
       support.addEventListener("click", () => void sendUpsSupport(row, support));
       doc.append(support);
@@ -933,24 +937,42 @@ const podCaption = document.createElement("span");
 podCaption.textContent = "Podgląd pierwszej strony PDF";
 podTooltip.append(podImage, podCaption);
 document.body.append(podTooltip);
-function showPodPreview(target) {
+function showPodPreview(target, pointer = null) {
   const link = target?.closest?.('a.pod-thumb-button[data-tracking]');
   if (!link) return;
   const tracking = link.dataset.tracking;
   if (!tracking) return;
-  const desired = "/api/shipments/" + encodeURIComponent(tracking) + "/thumbnail";
+  const desired = "/api/shipments/" + encodeURIComponent(tracking) + "/thumbnail?size=large";
   if (podImage.getAttribute("src") !== desired) podImage.src = desired;
   podTooltip.hidden = false;
   const rect = link.getBoundingClientRect();
   const box = podTooltip.getBoundingClientRect();
-  let left = Math.max(8, Math.min(rect.left - box.width + rect.width, innerWidth - box.width - 8));
-  let top = rect.top - box.height - 8;
-  if (top < 8) top = Math.min(innerHeight - box.height - 8, rect.bottom + 8);
-  podTooltip.style.left = left + "px";
-  podTooltip.style.top = Math.max(8, top) + "px";
+  const gap = 20;
+  const clampX = (x) => Math.max(12, Math.min(x, innerWidth - box.width - 12));
+  const clampY = (y) => Math.max(12, Math.min(y, innerHeight - box.height - 12));
+  // Prefer a location entirely to the right/left of the hovered thumbnail.
+  // The alternative above/below the anchor also keeps the pointer uncovered.
+  const positions = [
+    [rect.right + gap, clampY(rect.top - box.height / 4)],
+    [rect.left - gap - box.width, clampY(rect.top - box.height / 4)],
+    [clampX(rect.left), rect.bottom + gap],
+    [clampX(rect.left), rect.top - gap - box.height],
+  ];
+  const fits = ([x, y]) => x >= 12 && y >= 12
+    && x + box.width <= innerWidth - 12 && y + box.height <= innerHeight - 12;
+  const mouse = pointer || {x:rect.left + rect.width / 2,
+                            y:rect.top + rect.height / 2};
+  const overlapsPointer = ([x, y]) => mouse.x >= x - 12 && mouse.x <= x + box.width + 12
+    && mouse.y >= y - 12 && mouse.y <= y + box.height + 12;
+  const chosen = positions.find((pos) => fits(pos) && !overlapsPointer(pos))
+    || positions.find(fits) || [clampX(rect.right + gap), clampY(rect.bottom + gap)];
+  podTooltip.style.left = chosen[0] + "px";
+  podTooltip.style.top = chosen[1] + "px";
 }
 function hidePodPreview() { podTooltip.hidden = true; }
-$("rows").addEventListener("mouseover", (event) => showPodPreview(event.target));
+$("rows").addEventListener("mouseover", (event) => {
+  showPodPreview(event.target, {x:event.clientX, y:event.clientY});
+});
 $("rows").addEventListener("mouseout", (event) => {
   if (event.target.closest?.('a.pod-thumb-button')) hidePodPreview();
 });
@@ -1480,7 +1502,7 @@ async function sendUpsSupport(row, button) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: "{}",
     });
-    tableNotice("Serwer SMTP przyjął wiadomość dla " + row.tracking
+    tableNotice("Gmail API przyjęło wiadomość dla " + row.tracking
       + " skierowaną do " + result.recipient + ". Odbiór przez UPS nie jest jeszcze potwierdzony.");
     await refresh();
   } catch (error) {
@@ -1613,11 +1635,13 @@ document.querySelector(".view-tabs").addEventListener("keydown", (event) => {
 
 // Settings: server only supplies masked indicators; all sensitive fields stay
 // empty and are sent solely when the operator enters a replacement.
-function configNotice(message, error = false) {
+function configNotice(message, tone = "success") {
   const panel = $("config-notice");
+  const kind = tone === true ? "error" : tone === false ? "success" : tone;
   panel.hidden = false;
   panel.textContent = message;
-  panel.classList.toggle("error", error);
+  panel.classList.toggle("error", kind === "error");
+  panel.classList.toggle("warning", kind === "warning");
 }
 async function refreshConfiguration() {
   try {
@@ -1632,34 +1656,29 @@ async function refreshConfiguration() {
       + (archive.stored ?? "—")
       + " · w kolejce do uzupełnienia: " + (archive.queued ?? "—")
       + " · błędy oczekujące na ponowienie: " + (archive.error ?? "—");
-    $("gmail-config-id").placeholder = config.google_client_id || "Google OAuth Client ID";
-    $("gmail-config-secret").placeholder =
-      config.google_client_secret || "Google OAuth Client Secret";
-    const google = config.gmail;
-    const gmailApp = config.gmail_app || {};
-    $("gmail-app-email").placeholder = gmailApp.email || "np. office@electrosmart.pl";
     $("employee-full-name").value = config.employee?.name || "";
     $("employee-email").value = config.employee?.email || "";
-    $("gmail-app-note").textContent = gmailApp.verified
-      ? "Połączenie Gmail SMTP zweryfikowane: " + gmailApp.email
-        + ". Powiadomienia będą wysyłane po podaniu e-maila pracownika."
-      : gmailApp.configured
-      ? "Dane Gmail zapisane. Kliknij «Sprawdź logowanie», aby autoryzować powiadomienia."
-      : "Skonfiguruj Gmail: adres nadawcy i hasło aplikacji, bez Google Cloud.";
-    $("gmail-app-check").disabled = !gmailApp.configured;
-    $("gmail-config-indicator").textContent = gmailApp.verified
-      ? "Gmail zweryfikowany" : gmailApp.configured
-      ? "Oczekuje na test logowania" : google.configured ? "OAuth połączony"
-      : "Brak konfiguracji";
-    $("gmail-config-indicator").classList.toggle("configured", gmailApp.configured || google.configured);
-    $("gmail-connected-info").hidden = !google.configured;
-    $("gmail-connected-info").textContent = google.configured
-      ? "Aktywny nadawca: " + google.email : "";
-    $("gmail-redirect-uri").textContent = google.redirect_uri;
+    const google = config.gmail || {};
+    const connected = google.configured === true;
+    $("gmail-config-indicator").textContent = connected
+      ? "Połączono OAuth2" : google.oauth_ready ? "Gotowy do połączenia"
+      : "Brak klienta OAuth2";
+    $("gmail-config-indicator").classList.toggle("configured", connected);
+    $("gmail-connected-info").hidden = !connected;
+    $("gmail-connected-info").textContent = connected
+      ? "Nadawca Gmail: " + google.email + " · Zakres: gmail.send (wyłącznie wysyłanie)" : "";
     $("gmail-connect").disabled = !google.oauth_ready;
-    $("gmail-connect").textContent = google.configured
-      ? "Połącz ponownie / zmień konto" : "Połącz z kontem Google";
-    $("gmail-disconnect").hidden = !google.configured;
+    $("gmail-connect").textContent = connected
+      ? "Połącz ponownie / zmień konto" : "Połącz Gmail przez Google";
+    $("gmail-disconnect").hidden = !connected;
+    $("gmail-oauth-help").textContent = connected
+      ? "Gmail API aktywny. Wiadomości UPS można wysyłać ręcznie, a powiadomienia "
+        + "do pracownika automatycznie po podaniu jego adresu e-mail."
+      : google.oauth_ready
+      ? "Kliknij «Połącz Gmail przez Google» i zezwól wyłącznie na wysyłanie e-maili."
+      : "Brak zarejestrowanego klienta OAuth2 Gmail API po stronie aplikacji. "
+        + "Google wymaga klienta OAuth z własnej lub zarządzanej aplikacji. "
+        + "Sam kod biblioteki nie zastępuje rejestracji klienta.";
   } catch (error) {
     configNotice("Błąd odczytu konfiguracji: " + error.message, true);
   }
@@ -1677,7 +1696,8 @@ $("ups-config-form").addEventListener("submit", async (event) => {
     $("ups-config-id").value = "";
     $("ups-config-secret").value = "";
     configNotice(result.changed.length ? "Dane UPS zapisano w chronionym .env."
-      : "Nie wpisano nowych wartości; konfiguracja pozostała bez zmian.");
+      : "Nie wpisano nowych wartości; konfiguracja pozostała bez zmian.",
+      result.changed.length ? "success" : "warning");
     await refreshConfiguration();
   } catch (error) {
     configNotice(error.message, true);
@@ -1696,58 +1716,6 @@ $("employee-config-form").addEventListener("submit", async (event) => {
     configNotice("Dane pracownika zapisano: " + (result.employee.email || "brak adresu") + ".");
   } catch (error) { configNotice(error.message, true); }
   finally { save.disabled = false; }
-});
-$("gmail-app-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const button = event.currentTarget.querySelector('[type="submit"]');
-  button.disabled = true;
-  try {
-    const result = await requestJson("/api/config/gmail-app", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({email: $("gmail-app-email").value.trim(),
-        app_password: $("gmail-app-secret").value.replace(/\s/g, "")}),
-    });
-    $("gmail-app-email").value = "";
-    $("gmail-app-secret").value = "";
-    configNotice(result.changed.length
-      ? "Zapisano nadawcę Gmail i hasło aplikacji. Sprawdź logowanie."
-      : "Nie zmieniono danych Gmail.");
-    await refreshConfiguration();
-  } catch (error) {
-    configNotice("Nie zapisano Gmail: " + error.message, true);
-  } finally { button.disabled = false; }
-});
-$("gmail-app-check").addEventListener("click", async () => {
-  const button = $("gmail-app-check");
-  button.disabled = true;
-  try {
-    const result = await requestJson("/api/config/gmail-app/check", {method:"POST"});
-    configNotice("Gmail potwierdził logowanie konta " + result.email
-      + ". Zgłoszenia do UPS są wysyłane ręcznie, powiadomienia do pracownika automatycznie.");
-    $("gmail-app-note").textContent = "Połączenie SMTP zweryfikowane.";
-  } catch (error) {
-    configNotice("Nie udało się sprawdzić Gmail: " + error.message, true);
-  } finally { button.disabled = false; }
-});
-$("gmail-config-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const button = event.currentTarget.querySelector('[type="submit"]');
-  button.disabled = true;
-  try {
-    const result = await requestJson("/api/config/google", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({client_id: $("gmail-config-id").value.trim(),
-        client_secret: $("gmail-config-secret").value.trim()}),
-    });
-    $("gmail-config-id").value = "";
-    $("gmail-config-secret").value = "";
-    configNotice(result.changed.length
-      ? "Klient Google OAuth zapisany. Teraz użyj «Połącz z kontem Google»."
-      : "Nie wpisano nowych danych Google OAuth.");
-    await refreshConfiguration();
-  } catch (error) {
-    configNotice(error.message, true);
-  } finally { button.disabled = false; }
 });
 $("gmail-connect").addEventListener("click", async () => {
   const button = $("gmail-connect");
@@ -1780,7 +1748,7 @@ if (oauthResult) {
   const notes = {
     "gmail-connected": "Konto Gmail pomyślnie połączone.",
     "gmail-denied": "Logowanie Google zostało anulowane.",
-    "gmail-failed": "Nie udało się zakończyć autoryzacji Google. Sprawdź Client ID, Secret i redirect URI.",
+    "gmail-failed": "Autoryzacja Gmail nie powiodła się. Sprawdź konfigurację klienta OAuth2 na serwerze.",
   };
   configNotice(notes[oauthResult] || "Powrót z autoryzacji Google.",
     oauthResult !== "gmail-connected");

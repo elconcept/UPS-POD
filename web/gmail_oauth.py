@@ -1,7 +1,7 @@
 """Google OAuth web-server flow for explicit operator-authorized Gmail sending.
 
-OAuth implementation uses Google's maintained open-source google-auth-oauthlib:
-https://github.com/googleapis/google-auth-library-python-oauthlib
+OAuth implementation uses Google's maintained google-auth-oauthlib package:
+https://github.com/googleapis/google-cloud-python/tree/main/packages/google-auth-oauthlib
 
 Only gmail.send + OpenID email scopes. Refresh token is stored in /data,
 mode 0600, separate from Compose's environment file. No Gmail inbox access.
@@ -47,7 +47,10 @@ def client_config() -> dict:
     client_id = config_store.get("GOOGLE_OAUTH_CLIENT_ID")
     client_secret = config_store.get("GOOGLE_OAUTH_CLIENT_SECRET")
     if not client_id or not client_secret:
-        raise GoogleConfigError("Wprowadź Google OAuth Client ID i Client Secret w Konfiguracji.")
+        raise GoogleConfigError(
+            "Klient OAuth2 Gmail API nie został skonfigurowany po stronie aplikacji. "
+            "Google wymaga klienta OAuth z zaufanej, zarejestrowanej aplikacji."
+        )
     if not client_id.endswith(".apps.googleusercontent.com"):
         raise GoogleConfigError("Google OAuth Client ID ma nieprawidłowy format.")
     return {

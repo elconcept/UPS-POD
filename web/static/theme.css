@@ -732,3 +732,129 @@ button.stat-action{transition:background-color .1s}
   .actions .action-main #query{grid-area:search!important;width:100%!important;
     min-width:0!important;max-width:none!important;box-sizing:border-box}
 }
+
+/* v9: logistyczny status UPS nie współdzieli barw z dokumentami. */
+#shipments-table .ups-status.rescheduled{
+  background:#fff1c5!important;color:#83530b!important;border:1px solid #e8cd83
+}
+#shipments-table .ups-status.retry{
+  background:#ffe0e0!important;color:#a92333!important
+}
+#shipments-table .ups-status.processing{
+  background:#dfecff!important;color:#235aa5!important
+}
+:root[data-theme="dark"] #shipments-table .ups-status.rescheduled{
+  background:#55421f!important;color:#ffe09c!important;border-color:#85672c
+}
+:root[data-theme="dark"] #shipments-table .ups-status.retry{
+  background:#5b2b35!important;color:#ffb6c3!important
+}
+:root[data-theme="dark"] #shipments-table .ups-status.processing{
+  background:#203f65!important;color:#b4d9ff!important
+}
+/* Dokument PDF: turkusowy pozytywny, odróżniony od kolorów UPS. */
+#shipments-table .compact-document a.document-bubble.ready{
+  background:#d7f5ed!important;color:#106f68!important;
+  border:1px solid #a9dccd!important
+}
+:root[data-theme="dark"] #shipments-table .compact-document a.document-bubble.ready{
+  background:#184a45!important;color:#9af1e2!important;
+  border-color:#367b73!important
+}
+/* Szary dokument-niedostępny także wtedy, gdy w tle wystąpił błąd API.
+   O stanie technicznym i logistycznym informują osobne kolumny. */
+#shipments-table .compact-document .document-bubble.document-waiting-icon,
+#shipments-table .compact-document .document-bubble.waiting,
+#shipments-table .compact-document .document-bubble.retry,
+#shipments-table .compact-document .document-bubble.queued{
+  background:#e9edf1!important;color:#546475!important;
+  border:1px solid #cbd4df!important
+}
+:root[data-theme="dark"] #shipments-table .compact-document .document-bubble.document-waiting-icon,
+:root[data-theme="dark"] #shipments-table .compact-document .document-bubble.waiting,
+:root[data-theme="dark"] #shipments-table .compact-document .document-bubble.retry,
+:root[data-theme="dark"] #shipments-table .compact-document .document-bubble.queued{
+  background:#354253!important;color:#c2cfdf!important;
+  border-color:#516276!important
+}
+#shipments-table .compact-document .support-sent{
+  background:#e8f6f3!important;color:#117668!important
+}
+:root[data-theme="dark"] #shipments-table .compact-document .support-sent{
+  background:#1c4741!important;color:#86e1cb!important
+}
+/* POD viewer: high resolution image, large readable preview and no pointer
+   interception; placement is decided in JS based on viewport and cursor. */
+.pod-preview{
+  box-sizing:border-box!important;
+  width:min(48vw,800px)!important;
+  max-width:calc(100vw - 24px)!important;
+  max-height:calc(100vh - 24px)!important;
+  padding:13px!important;border-radius:12px!important;
+  pointer-events:none!important;
+  box-shadow:0 20px 60px #0006!important;
+}
+.pod-preview img{
+  width:100%!important;
+  height:min(76vh,900px)!important;
+  max-width:100%!important;
+  max-height:min(76vh,900px)!important;
+  object-fit:contain!important;
+  image-rendering:auto;
+  background:#fff!important;
+}
+.pod-preview span{font-size:12px!important;margin-top:9px!important}
+@media(max-width:850px){
+  .pod-preview{width:min(640px,calc(100vw - 24px))!important}
+  .pod-preview img{height:min(65vh,650px)!important;max-height:min(65vh,650px)!important}
+}
+
+
+/* v9: API is the second fixed rail on the LEFT, next to the checkbox.
+   It cannot be moved, hidden or resized with the user's data columns. */
+#shipments-table .api-fixed-header,
+#shipments-table .api-fixed-filter,
+#shipments-table td[data-fixed="api"]{
+  position:sticky!important;
+  left:44px!important;
+  right:auto!important;
+  z-index:6!important;
+  width:46px!important;min-width:46px!important;max-width:46px!important;
+  padding:4px 3px!important;
+  background:var(--ui-surface)!important;
+  border-left:0!important;
+  border-right:1px solid var(--ui-border)!important;
+  box-shadow:2px 0 4px #00000014!important;
+  text-align:center!important;
+}
+#shipments-table th.api-fixed-header,
+#shipments-table th.api-fixed-filter{
+  z-index:8!important;background:var(--ui-thead)!important;
+}
+#shipments-table tbody tr:hover td[data-fixed="api"]{
+  background:var(--ui-row)!important;
+}
+
+/* Notice severity: no-op changes are warnings, not successes. */
+#config-notice.warning{
+  background:#fff0c6!important;
+  border:1px solid #e6c16b!important;
+  color:#7e5209!important;
+}
+:root[data-theme="dark"] #config-notice.warning{
+  background:#51401f!important;
+  border-color:#8c6d31!important;
+  color:#ffe5a8!important;
+}
+.gmail-oauth-actions{display:flex;gap:8px;flex-wrap:wrap}
+#gmail-oauth-help{max-width:760px;line-height:1.5}
+#gmail-connected-info{background:var(--ui-select);border-radius:7px;
+  padding:8px 10px;margin:8px 0;color:var(--ui-text)}
+#shipments-table .compact-document .support-sent.waiting{
+  background:#e9edf1!important;color:#546475!important;
+  border:1px solid #cbd4df!important
+}
+:root[data-theme="dark"] #shipments-table .compact-document .support-sent.waiting{
+  background:#354253!important;color:#c2cfdf!important;
+  border-color:#516276!important
+}

@@ -455,12 +455,14 @@ LIST_COLUMNS = {
         "weight_value||' '||CASE weight_unit WHEN 'KGS' THEN 'kg' "
         "WHEN 'LBS' THEN 'lb' ELSE weight_unit END END",
     "ups_status": "CASE "
-        "WHEN LOWER(ups_status)='on the way: delayed' THEN 'W drodze — opóźniona' "
+        "WHEN LOWER(ups_status)='on the way: delayed' THEN 'Opóźniona' "
         "WHEN LOWER(ups_status)='delayed' THEN 'Opóźniona' "
         "WHEN LOWER(ups_status)='on the way' THEN 'W drodze' "
-        "WHEN LOWER(ups_status)='delivery rescheduled' THEN 'Zmieniono termin doręczenia' "
+        "WHEN LOWER(ups_status)='delivery rescheduled' THEN 'Zmiana terminu' "
         "WHEN LOWER(ups_status)='reschedule delivery requested' "
-        "THEN 'Zlecono zmianę terminu doręczenia' "
+        "THEN 'Zmiana terminu' "
+        "WHEN LOWER(ups_status) IN ('returned to sender','return to sender',"
+        "'returning to sender','shipment returned') THEN 'Zwrot' "
         "WHEN LOWER(ups_status)='out for delivery' THEN 'W doręczeniu' "
         "WHEN LOWER(ups_status)='delivered' THEN 'Doręczono' "
         "ELSE COALESCE(NULLIF(ups_status,''),'Bez statusu') END",

@@ -70,28 +70,18 @@
           <h3>Gmail — nadawca zgłoszeń UPS</h3>
           <span id="gmail-config-indicator" class="config-chip">Sprawdzanie…</span>
         </div>
-        <p class="config-help">Bez Google Cloud i bez OAuth Client ID. Wystarczy
-          adres skrzynki Google oraz odrębne <strong>16-znakowe hasło aplikacji</strong>
-          dostępne dla kont z weryfikacją dwuetapową. Nie wpisuj zwykłego hasła Google.</p>
-        <form id="gmail-app-form" autocomplete="off">
-          <label for="gmail-app-email">Adres e-mail nadawcy Gmail / Google Workspace</label>
-          <input id="gmail-app-email" type="email" maxlength="254" autocomplete="off"
-            placeholder="np. office@electrosmart.pl" spellcheck="false">
-          <label for="gmail-app-secret">Hasło aplikacji Gmail (16 znaków)</label>
-          <input id="gmail-app-secret" type="password" maxlength="32"
-            autocomplete="new-password" placeholder="•••• •••• •••• ••••">
-          <div class="config-actions">
-            <button type="submit">Zapisz Gmail</button>
-            <button id="gmail-app-check" type="button" class="secondary">Sprawdź logowanie</button>
-          </div>
-        </form>
-        <p class="config-help">Hasło aplikacji można utworzyć na
-          <a href="https://myaccount.google.com/apppasswords" target="_blank"
-             rel="noopener noreferrer">koncie Google</a>.
-          Niektóre konta Google Workspace nie dopuszczają haseł aplikacji
-          (zależy od polityki administratora). Próba „Sprawdź logowanie”
-          nie wysyła wiadomości.</p>
-        <p id="gmail-app-note" class="field-help" role="status"></p>
+        <p class="config-help">Połącz Gmail przez Google OAuth 2.0. Aplikacja prosi
+          wyłącznie o uprawnienie <code>gmail.send</code> oraz identyfikację nadawcy.
+          Nie uzyskuje dostępu do skrzynki, odczytu wiadomości ani usuwania poczty.
+          Hasło Gmail i hasło aplikacji nie są wymagane.</p>
+        <div class="gmail-oauth-actions">
+          <button id="gmail-connect" type="button" disabled>Połącz Gmail przez Google</button>
+          <button id="gmail-disconnect" type="button" class="secondary" hidden>Odłącz Gmail</button>
+        </div>
+        <div id="gmail-connected-info" class="gmail-connected-info" role="status" hidden></div>
+        <p id="gmail-oauth-help" class="field-help" role="status">
+          Sprawdzanie dostępności autoryzacji Google…
+        </p>
         <form id="employee-config-form" class="employee-config-form" autocomplete="on">
           <h4>Osoba odpowiedzialna za przesyłki</h4>
           <label for="employee-full-name">Imię i nazwisko pracownika</label>
@@ -105,35 +95,7 @@
           po planowanym terminie) i przejścia statusu z opóźnionego na doręczony.
           Wiadomości trafiają na wskazany e-mail, nie do UPS.</p>
         </form>
-        <details class="gmail-advanced" hidden><summary>Ustawienia historyczne OAuth</summary>
-        <p class="config-help">Alternatywa dla kont bez haseł aplikacji.
-          OAuth wymaga zarejestrowanej aplikacji Google; sama biblioteka
-          nie zastępuje Client ID i Secret.</p>
-        <div id="gmail-connected-info" class="gmail-connected-info" hidden></div>
-        <form id="gmail-config-form" autocomplete="off">
-          <label for="gmail-config-id">Google OAuth Client ID (aplikacja typu Web)</label>
-          <input id="gmail-config-id" type="text" maxlength="512" autocomplete="off"
-            spellcheck="false" placeholder="Client ID Google Cloud">
-          <label for="gmail-config-secret">Google OAuth Client Secret</label>
-          <input id="gmail-config-secret" type="password" maxlength="512"
-            autocomplete="new-password" placeholder="Client Secret Google Cloud">
-          <div class="config-actions"><button type="submit" class="secondary">Zapisz OAuth Client</button></div>
-        </form>
-        <div class="gmail-oauth-actions">
-          <button id="gmail-connect" type="button">Połącz z kontem Google</button>
-          <button id="gmail-disconnect" type="button" class="secondary" hidden>Odłącz Gmail</button>
-        </div>
-        <p class="config-help">
-          W <a href="https://console.cloud.google.com/apis/credentials"
-            target="_blank" rel="noopener noreferrer">Google Cloud Console</a>
-          utwórz klienta OAuth 2.0 typu „Aplikacja internetowa” i włącz Gmail API.
-          Dodaj jako dozwolony redirect URI:
-        </p>
-        <code class="config-uri" id="gmail-redirect-uri">https://ups.xlap.pl/api/config/gmail/callback</code>
-        <p class="field-help">Po zalogowaniu przyciskiem Google konto będzie mogło wysyłać
-          zgłoszenia do UPS. Token odświeżania jest przechowywany na serwerze, poza przeglądarką.
-          Nie wysyłamy zgłoszeń bez kliknięcia w kolumnie „Dokument”.</p>
-        </details>
+
       </article>
     </div>
   </section>
@@ -257,7 +219,7 @@
     <div class="table-wrap">
       <table id="shipments-table">
         <thead><tr>
-          <th class="selection-header" scope="col" aria-label="Zaznacz przesyłki"><input type="checkbox" id="select-page" title="Zaznacz widoczne przesyłki" aria-label="Zaznacz wszystkie przesyłki na stronie"></th><th>Shipment ID</th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>Waga</th><th>Status UPS</th><th>Dokument</th><th>Podgląd POD</th><th class="api-fixed-header" title="Stan UPS API" scope="col">API</th>
+          <th class="selection-header" scope="col" aria-label="Zaznacz przesyłki"><input type="checkbox" id="select-page" title="Zaznacz widoczne przesyłki" aria-label="Zaznacz wszystkie przesyłki na stronie"></th><th class="api-fixed-header" title="Stan UPS API" scope="col">API</th><th>Shipment ID</th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>Waga</th><th>Status UPS</th><th>Dokument</th><th>Podgląd POD</th>
         </tr></thead>
         <tbody id="rows"><tr><td colspan="10" class="empty">Ładowanie przesyłek…</td></tr></tbody>
       </table>
