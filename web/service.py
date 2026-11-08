@@ -402,7 +402,7 @@ UPS_EXTRA_COLUMNS = {
     "ups.event_code": ("Kod ostatniego zdarzenia", "package.activity[0].status.code"),
     "ups.event_status_code": ("Kod skanu ostatniego zdarzenia", "package.activity[0].status.statusCode"),
     "ups.activity_description": ("Opis ostatniego skanu", "package.activity[0].status.description"),
-    "ups.activity_date": ("Data ostatniego skanu", "package.activity[0].date"),
+    "ups.activity_date": ("Ostatni skan", "package.activity[0].date"),
     "ups.activity_time": ("Godzina ostatniego skanu", "package.activity[0].time"),
     "ups.delivery_date_type": ("Rodzaj terminu doręczenia", "package.deliveryDate[0].type"),
     "ups.delivery_time_type": ("Rodzaj przedziału doręczenia", "package.deliveryTime.type"),
@@ -419,7 +419,7 @@ UPS_EXTRA_COLUMNS = {
     "ups.width": ("Szerokość paczki", "package.dimension.width"),
     "ups.height": ("Wysokość paczki", "package.dimension.height"),
     "ups.dimension_unit": ("Jednostka wymiarów", "package.dimension.unitOfDimension"),
-    "ups.activity_gmt_date": ("Data ostatniego skanu UTC", "package.activity[0].gmtDate"),
+    "ups.activity_gmt_date": ("Ostatni skan (UTC)", "package.activity[0].gmtDate"),
     "ups.activity_gmt_time": ("Godzina ostatniego skanu UTC", "package.activity[0].gmtTime"),
     "ups.activity_gmt_offset": ("Przesunięcie strefy skanu", "package.activity[0].gmtOffset"),
     "ups.activity_country": ("Kraj ostatniego skanu", "package.activity[0].destCountryCode"),
@@ -507,6 +507,16 @@ LIST_COLUMNS = {
 # All JSON paths below originate in the fixed server-side whitelist.
 for _key in UPS_EXTRA_COLUMNS:
     LIST_COLUMNS[_key] = f"""COALESCE(json_extract(tracking_extras, '$."{_key}"'), '')"""
+# Date projectors make display, sorting and column filtering use the same
+# YYYY-MM-DD format, including already archived YYYYMMDD values.
+for _key in ("ups.pickup_date", "ups.activity_date"):
+    _raw = f"""TRIM(COALESCE(json_extract(tracking_extras, '$."{_key}"'), ''))"""
+    LIST_COLUMNS[_key] = (
+        f"CASE WHEN {_raw} GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'"
+        f" THEN SUBSTR({_raw},1,4)||'-'||SUBSTR({_raw},5,2)||'-'||SUBSTR({_raw},7,2)"
+        f" WHEN {_raw} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"
+        f" THEN {_raw} ELSE '' END"
+    )
 SORT_COLUMNS = dict(LIST_COLUMNS, weight="CAST(NULLIF(weight_value,'') AS REAL)")
 
 

@@ -567,8 +567,8 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
                 "#shipments-table thead tr:first-child .sort-header"
             ).evaluate_all("(nodes) => nodes.map((n) => n.firstChild.textContent)")
             assert headings[:9] == [
-                "Shipment ID", "Numer UPS", "Data nadania",
-                "Data doręczenia", "W transporcie", "Waga", "Status UPS", "Dokument", "Podgląd POD",
+                "Shipment ID", "Numer UPS", "Nadanie",
+                "Doręczenie", "W transporcie", "Waga", "Status UPS", "Dokument", "Podgląd POD",
             ]
             assert len(headings) == len(service.UPS_EXTRA_COLUMNS) + 9
             expect(page.locator('.column-header[data-col="weight"]')).to_be_hidden()
@@ -757,7 +757,7 @@ def test_browser_reorder_sort_filter_and_ups_case_draft(application):
             expect(page.locator(f'#rows tr[data-tracking="{a}"] .fba-id')).to_have_text("FBANEWID")
 
             page.locator(f'#rows tr[data-tracking="{a}"] .support-send').click()
-            expect(page.locator("#table-notice")).to_contain_text("OAuth2")
+            expect(page.locator("#table-notice")).to_contain_text("Zapisz adres Gmail")
             browser.close()
     finally:
         server.shutdown()
@@ -831,7 +831,7 @@ def test_ups_specific_status_and_safe_tracking_columns(application):
 
 def test_one_click_support_sends_once_without_claiming_delivery(application, monkeypatch):
     import service
-    import gmail_oauth
+    import gmail_smtp
 
     tracking = "1Z004R316805433991"
     service.add_numbers(tracking)
@@ -847,14 +847,13 @@ def test_one_click_support_sends_once_without_claiming_delivery(application, mon
         headers = {"X-CSRF-Token": csrf}
         missing = client.post(f"/api/support/{tracking}/send", json={}, headers=headers)
         assert missing.status_code == 503
-        assert missing.json["code"] == "GMAIL_OAUTH_REQUIRED"
+        assert missing.json["code"] == "GMAIL_APP_PASSWORD_REQUIRED"
 
         sent = []
-        monkeypatch.setattr(gmail_oauth, "status", lambda: {
-            "configured": True, "email": "worker@gmail.com",
-            "oauth_ready": True,
+        monkeypatch.setattr(gmail_smtp, "status", lambda: {
+            "configured": True, "verified": True, "email": "worker@gmail.com",
         })
-        monkeypatch.setattr(gmail_oauth, "send", lambda msg:
+        monkeypatch.setattr(gmail_smtp, "send", lambda msg:
             (sent.append(msg), {"id": "gmail-confirmed-17"})[1])
         delivered = client.post(f"/api/support/{tracking}/send", json={}, headers=headers)
         assert delivered.status_code == 200, delivered.json
@@ -1002,63 +1001,25 @@ def test_configuration_masks_credentials_and_persists_env(application, monkeypat
         })
         assert blocked.status_code == 403
 
-        oauth = client.post("/api/config/google", json={
-            "client_id": "12345-abcdef.apps.googleusercontent.com",
-            "client_secret": "GOCSPX-0123456789abcdef",
-        }, headers=headers)
-        assert oauth.status_code == 200
-        assert oauth.json["gmail"]["oauth_ready"] is True
-        assert oauth.json["gmail"]["configured"] is False
-        assert "GOCSPX-0123456789abcdef" not in oauth.get_data(as_text=True)
-        assert "GOCSPX-0123456789abcdef" in path.read_text(encoding="utf-8")
-        initiated = client.post("/api/config/gmail/start", json={}, headers=headers)
-        assert initiated.status_code == 200, initiated.json
-        from urllib.parse import parse_qs, urlparse
-        url = urlparse(initiated.json["url"])
-        assert url.hostname == "accounts.google.com"
-        query = parse_qs(url.query)
-        assert "gmail.send" in query["scope"][0]
-        assert "gmail.readonly" not in query["scope"][0]
-        assert query["redirect_uri"] == ["https://ups.xlap.pl/api/config/gmail/callback"]
-        with client.session_transaction() as session:
-            expected_state = session["gmail_oauth_state"]
-        assert query["state"] == [expected_state]
-        rejected = client.get("/api/config/gmail/callback?state=wrong&code=unused")
-        assert rejected.status_code == 403
-
-        started = client.post("/api/config/gmail/start", json={}, headers=headers)
-        state = parse_qs(urlparse(started.json["url"]).query)["state"][0]
-        denied = client.get("/api/config/gmail/callback", query_string={
-            "state": state, "error": "access_denied"
-        })
-        assert denied.status_code == 302
-        assert denied.location.endswith("/?config=gmail-denied")
-    # No network OAuth requests or real Gmail messages in this test.
+        # Legacy OAuth routes are intentionally disabled after SMTP migration.
+        assert client.post("/api/config/google",json={},headers=headers).status_code == 404
+        assert client.post("/api/config/gmail/start",json={},headers=headers).status_code == 404
+        assert client.get("/api/config").json["gmail_app"]["configured"] is False
+        assert client.post("/api/config/gmail-app",json={
+            "email":"invalid","app_password":""},headers=headers).status_code == 400
+        assert client.post("/api/config/gmail-app/check",json={}).status_code == 403
 
 
-def test_support_can_send_via_google_without_smtp(application, monkeypatch):
-    import config_store
-    import gmail_oauth
+def test_support_can_send_via_gmail_smtp(application, monkeypatch):
+    import gmail_smtp
     import service
     import support_mail
 
-    config_store.update({
-        "GOOGLE_OAUTH_CLIENT_ID": "12345-abcdef.apps.googleusercontent.com",
-        "GOOGLE_OAUTH_CLIENT_SECRET": "GOCSPX-0123456789abcdef",
-    })
-    gmail_oauth._atomic_json(gmail_oauth.token_file(), {
-        "email": "verified-gmail-user@gmail.com",
-        "client_hash": gmail_oauth.fingerprint(
-            config_store.get("GOOGLE_OAUTH_CLIENT_ID")),
-        "refresh_token": "fake-refresh-token",
-    })
-    assert gmail_oauth.status()["configured"] is True
     captured = []
-    def fake_send(message):
-        captured.append(message)
-        return {"id": "gmail-msg-123", "email": "verified-gmail-user@gmail.com"}
-    monkeypatch.setattr(gmail_oauth, "send", fake_send)
-    monkeypatch.delenv("UPS_SUPPORT_SMTP_HOST", raising=False)
+    monkeypatch.setattr(gmail_smtp, "status", lambda: {
+        "configured": True, "verified": True, "email": "sender@example.test"})
+    monkeypatch.setattr(gmail_smtp, "send", lambda message: (
+        captured.append(message), {"id": "smtp-test-id"})[1])
 
     tracking = "1Z004R316805433991"
     service.add_numbers(tracking)
@@ -1067,16 +1028,13 @@ def test_support_can_send_via_google_without_smtp(application, monkeypatch):
                    "delivery_date_type='RDD',ups_status='Delivery Rescheduled',"
                    "ups_status_code='X' WHERE tracking=?", (tracking,))
     sent = support_mail.send_support(tracking)
-    assert sent["sent"] is True and sent["channel"] == "gmail_oauth"
+    assert sent["sent"] is True and sent["channel"] == "gmail_smtp"
     assert len(captured) == 1
-    assert captured[0]["From"] == "verified-gmail-user@gmail.com"
+    assert captured[0]["From"] == "sender@example.test"
     assert captured[0]["To"] == support_mail.OFFICIAL_CONTACT
     assert "We do not assert that delivery has occurred." in captured[0].get_content()
     with pytest.raises(support_mail.SupportAlreadySent):
         support_mail.send_support(tracking)
-    gmail_oauth.disconnect()
-    assert gmail_oauth.status()["configured"] is False
-
 
 def test_config_tab_plain_dates_and_mixed_zip_browser(application):
     import service
@@ -1129,9 +1087,9 @@ def test_config_tab_plain_dates_and_mixed_zip_browser(application):
             expect(page.locator("#shipments-panel")).to_be_hidden()
             expect(page.locator("#logs-panel")).to_be_hidden()
             expect(page.locator("#ups-config-id")).to_be_visible()
-            expect(page.locator("#gmail-connect")).to_be_visible()
+            expect(page.locator("#gmail-app-form")).to_be_visible()
             assert page.locator("#gmail-config-id").count() == 0
-            expect(page.locator("#gmail-connect")).to_be_disabled()
+            expect(page.locator("#gmail-app-save")).to_be_disabled()
             assert page.locator("#tab-config").get_attribute("aria-selected") == "true"
             page.locator("#tab-shipments").click()
             expect(page.locator("#rows tr")).to_have_count(2)
@@ -1490,22 +1448,22 @@ def test_pdf_thumbnail_first_page_cached_and_missing(application):
 def test_gmail_oauth_only_ui(application):
     with application.test_client() as client:
         html = client.get("/").get_data(as_text=True)
-        assert 'id="gmail-connect"' in html
-        assert 'id="gmail-app-form"' not in html
-        assert "Hasło aplikacji Gmail" not in html
-        assert "Zapisz Gmail" not in html
+        assert 'id="gmail-app-form"' in html
+        assert 'id="gmail-connect"' not in html
+        assert "Hasło aplikacji Google" in html
+        assert "Zapisz Gmail" in html
         assert "brand-home" in html
         with client.session_transaction() as session:
             headers = {"X-CSRF-Token": session["csrf"]}
         assert client.post("/api/config/gmail-app",
-                           json={},headers=headers).status_code == 404
+                           json={},headers=headers).status_code == 200
         assert client.post("/api/config/gmail-app/check",
-                           json={},headers=headers).status_code == 404
-        status = client.get("/api/config").json["gmail"]
-        assert not status["configured"]
-        assert not status["oauth_ready"]
-        assert client.post("/api/config/gmail/start",
                            json={},headers=headers).status_code == 422
+        status = client.get("/api/config").json["gmail_app"]
+        assert not status["configured"]
+        assert not status["verified"]
+        assert client.post("/api/config/gmail/start",
+                           json={},headers=headers).status_code == 404
 
 
 def test_full_width_24_columns_filter_visibility_resizer_and_xlsx_browser(application):
@@ -1918,7 +1876,7 @@ def test_staff_gmail_and_notification_outbox(application, monkeypatch):
     from zoneinfo import ZoneInfo
     import notifications
     import service
-    import gmail_oauth
+    import gmail_smtp
 
     numbers = ["1Z" + f"{i:016d}" for i in (411, 412, 413)]
     service.add_numbers(" ".join(numbers))
@@ -1939,15 +1897,16 @@ def test_staff_gmail_and_notification_outbox(application, monkeypatch):
         assert client.post("/api/config/employee",json=employee,headers=headers).status_code==200
         assert client.get("/api/config").json["employee"]==employee
         assert not notifications.available()
-        monkeypatch.setattr(gmail_oauth,"status", lambda: {
-            "configured":True,"email":"office@example.org","oauth_ready":True})
+        monkeypatch.setattr(gmail_smtp,"verified", lambda: True)
+        monkeypatch.setattr(gmail_smtp,"status", lambda: {
+            "configured":True,"verified":True,"email":"office@example.org"})
         assert notifications.available()
         rows=client.get("/api/shipments?month=all").json["rows"]
         assert next(r for r in rows if r["tracking"]==numbers[0])["support_eligible"]
     service.save_tracking_detail(numbers[2],{"status":"Delivered","status_typ":"D"})
     assert notifications.queue_overdue()==2
     sent=[]
-    monkeypatch.setattr(gmail_oauth,"send",
+    monkeypatch.setattr(gmail_smtp,"send",
                         lambda msg:(sent.append(msg),{"id":"test-id"})[1])
     assert notifications.tick()==3
     assert len(sent)==1
@@ -1958,7 +1917,7 @@ def test_staff_gmail_and_notification_outbox(application, monkeypatch):
     with service.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM mail_notifications "
                           "WHERE state='sent'").fetchone()[0]==3
-    monkeypatch.setattr(gmail_oauth,"status", lambda: {"configured":False})
+    monkeypatch.setattr(gmail_smtp,"verified", lambda: False)
     assert not notifications.available()
 
 
@@ -2059,7 +2018,7 @@ def test_browser_mail_icon_employee_home_and_autofit_responsive(application):
                 assert page.evaluate('document.cookie.includes("ups_pod_column_widths=")')
                 page.locator("#tab-config").click()
                 expect(page.locator("#employee-config-form")).to_be_visible()
-                expect(page.locator("#gmail-oauth-help")).to_be_visible()
+                expect(page.locator("#gmail-app-note")).to_be_visible()
                 assert page.locator(".gmail-advanced").count() == 0
                 context.close()
             browser.close()
@@ -2160,9 +2119,9 @@ def test_v9_api_left_status_palette_large_pod_preview_and_oauth_ui(application):
                 page.keyboard.press("Alt+ArrowRight")
                 expect(headers.nth(1)).to_have_class("api-fixed-header")
                 page.locator("#tab-config").click()
-                expect(page.locator("#gmail-connect")).to_be_visible()
-                expect(page.locator("#gmail-connect")).to_be_disabled()
-                assert page.locator("#gmail-app-form").count()==0
+                expect(page.locator("#gmail-app-form")).to_be_visible()
+                expect(page.locator("#gmail-app-save")).to_be_disabled()
+                assert page.locator("#gmail-connect").count()==0
                 page.locator("#ups-config-form button[type=submit]").click()
                 expect(page.locator("#config-notice")).to_have_class("table-notice warning")
                 context.close()
@@ -2272,6 +2231,152 @@ def test_v10_toolbar_led_header_and_resize_visuals(application):
                     page.locator(".column-header[data-col='transit_days'] .sort-header").click()
                     expect(page.locator('#rows [data-col="transit_days"]').first).to_have_text("0 dni")
                     context.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+def test_gmail_app_password_smtp_only_secure_config_and_delivery(application, monkeypatch):
+    from email.message import EmailMessage
+    import config_store
+    import gmail_smtp
+    import service
+
+    password = "abcd" * 4
+    handshakes = []
+    delivered = []
+    class FakeSMTP:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def login(self, address, supplied):
+            handshakes.append(address)
+            assert supplied == password
+        def send_message(self, message):
+            delivered.append(message)
+            return {}
+    monkeypatch.setattr(gmail_smtp, "_session", FakeSMTP)
+    with application.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as sess:
+            headers = {"X-CSRF-Token": sess["csrf"]}
+        result = client.post("/api/config/gmail-app", json={
+            "email":"smtp@example.test", "app_password":"abcd abcd abcd abcd",
+        }, headers=headers)
+        assert result.status_code == 200
+        assert password not in result.get_data(as_text=True)
+        assert result.json["gmail_app"]["configured"]
+        assert not result.json["gmail_app"]["verified"]
+        assert not gmail_smtp.verified()
+        assert (service.DATA_DIR / ".env").stat().st_mode & 0o777 == 0o600
+        assert client.post("/api/config/gmail-app/check",json={}).status_code == 403
+        checked = client.post("/api/config/gmail-app/check",json={},headers=headers)
+        assert checked.status_code == 200 and checked.json["verified"]
+        assert not delivered
+        assert handshakes == ["smtp@example.test"]
+        assert gmail_smtp.verified()
+        assert client.get("/api/config").json["gmail_app"]["email"] == "smtp@example.test"
+        assert password not in str(client.get("/api/config").json)
+
+    note = EmailMessage()
+    note["From"] = "smtp@example.test"
+    note["To"] = "recipient@example.test"
+    note["Message-ID"] = "<test-mail-id@example.test>"
+    note["Subject"] = "Kontrola lokalna"
+    note.set_content("Wiadomość w pamięci, brak wysyłki przez sieć")
+    assert gmail_smtp.send(note)["channel"] == "gmail_smtp"
+    assert len(delivered) == 1
+    assert handshakes == ["smtp@example.test"] * 2
+    with pytest.raises(gmail_smtp.GmailConfigError):
+        note.replace_header("From", "other@example.test")
+        gmail_smtp.send(note)
+    config_store.update({"GMAIL_SMTP_APP_PASSWORD":"wxyz"*4})
+    assert not gmail_smtp.verified()
+
+def test_ups_optional_date_columns_iso_projection_hidden_by_default(application):
+    import json
+    import service
+
+    a,b,c = ["1Z" + f"{i:016d}" for i in (3101,3102,3103)]
+    service.add_numbers(" ".join((a,b,c)))
+    with service.connection() as db:
+        data = [
+            (a,{"ups.pickup_date":"20261101","ups.activity_date":"20261107"}),
+            (b,{"ups.pickup_date":"2026-11-03","ups.activity_date":"2026-11-08"}),
+            (c,{"ups.pickup_date":"20260230","ups.activity_date":""}),
+        ]
+        for tracking,extras in data:
+            db.execute("UPDATE shipments SET tracking_extras=? WHERE tracking=?",
+                       (json.dumps(extras),tracking))
+    found=service.list_numbers(month="all",
+                               column_filters={"ups.pickup_date":"2026-11-01"})
+    assert found["total"] == 1 and found["rows"][0]["tracking"] == a
+    desc=service.list_numbers(month="all",sort_by="ups.activity_date",sort_dir="desc")
+    assert [r["tracking"] for r in desc["rows"]][:2]==[b,a]
+    server=make_server("127.0.0.1",0,application,threaded=True)
+    thread=threading.Thread(target=server.serve_forever,daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as pw:
+            browser=pw.chromium.launch()
+            for mode in ("light","dark"):
+                page=browser.new_page(viewport={"width":1440,"height":920})
+                page.goto(f"http://127.0.0.1:{server.server_port}")
+                page.evaluate("(theme) => { document.documentElement.dataset.theme = theme; }", mode)
+                page.locator("#month-filter").select_option("all")
+                expect(page.locator("#rows tr")).to_have_count(3)
+                expect(page.locator('.column-header[data-col="ship_date"] .sort-header')).to_contain_text("Nadanie")
+                expect(page.locator('.column-header[data-col="delivery_date"] .sort-header')).to_contain_text("Doręczenie")
+                for key in ("ups.pickup_date","ups.activity_date"):
+                    expect(page.locator(f'.column-header[data-col="{key}"]')).to_be_hidden()
+                page.locator("#columns-open").click()
+                for label in ("Data przejęcia przez UPS", "Ostatni skan"):
+                    page.locator(".column-choice").filter(has_text=label).first.locator("input").check()
+                page.locator("#columns-done").click()
+                expect(page.locator('.column-header[data-col="ups.activity_date"] .sort-header')).to_contain_text("Ostatni skan")
+                for tracking, pickup, scanned in [
+                    (a,"2026-11-01","2026-11-07"),
+                    (b,"2026-11-03","2026-11-08"),
+                    (c,"—","—"),
+                ]:
+                    selector=f'#rows tr[data-tracking="{tracking}"]'
+                    expect(page.locator(selector+' [data-col="ups.pickup_date"]')).to_have_text(pickup)
+                    expect(page.locator(selector+' [data-col="ups.activity_date"]')).to_have_text(scanned)
+                assert page.locator(f'#rows tr[data-tracking="{a}"] [data-col="ups.pickup_date"]').evaluate(
+                    '(el)=>getComputedStyle(el).fontFamily') == page.locator(
+                    f'#rows tr[data-tracking="{a}"] [data-col="ship_date"]').evaluate(
+                    '(el)=>getComputedStyle(el).fontFamily')
+                page.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+def test_gmail_app_form_disabled_until_valid_credentials_browser(application):
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            page = browser.new_page(viewport={"width": 1280, "height": 850})
+            page.goto(f"http://127.0.0.1:{server.server_port}")
+            page.locator("#tab-config").click()
+            expect(page.locator("#gmail-app-save")).to_be_disabled()
+            expect(page.locator("#gmail-app-check")).to_be_disabled()
+            page.locator("#gmail-app-email").fill("demo@example.test")
+            expect(page.locator("#gmail-app-save")).to_be_disabled()
+            page.locator("#gmail-app-password").fill("a" * 15)
+            expect(page.locator("#gmail-app-save")).to_be_disabled()
+            page.locator("#gmail-app-password").fill("a" * 16)
+            expect(page.locator("#gmail-app-save")).to_be_enabled()
+            page.locator("#gmail-app-save").click()
+            expect(page.locator("#config-notice")).to_contain_text("Dane Gmail zapisano")
+            expect(page.locator("#gmail-app-save")).to_be_disabled()
+            expect(page.locator("#gmail-app-check")).to_be_enabled()
+            assert "a" * 16 not in page.locator("body").inner_text()
+            # Do not click the live SMTP login check in a browser test.
             browser.close()
     finally:
         server.shutdown()

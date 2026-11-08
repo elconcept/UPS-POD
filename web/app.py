@@ -4,18 +4,17 @@ from __future__ import annotations
 import io
 import os
 import secrets
-import time
 import zipfile
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session
+from flask import Flask, abort, jsonify, render_template, request, send_file, session
 from werkzeug.exceptions import HTTPException
 
 import service
 import support_mail
 import config_store
-import gmail_oauth
+import gmail_smtp
 import reports
 import pod_thumbnail
 
@@ -45,8 +44,8 @@ def create_app(testing: bool = False) -> Flask:
         MAX_CONTENT_LENGTH=1024 * 1024,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SECURE=not testing,
-        # OAuth Google redirects to a top-level GET; Strict would drop the
-        # state cookie. Mutating requests still require Origin + CSRF.
+        # The UI is behind Cloudflare Access; mutating requests require
+        # same-origin checks and a CSRF token.
         SESSION_COOKIE_SAMESITE="Lax",
         PREFERRED_URL_SCHEME="https",
     )
@@ -104,7 +103,7 @@ def create_app(testing: bool = False) -> Flask:
 
     @web.get("/api/config")
     def config_status():
-        return jsonify(**config_store.masked_status(), gmail=gmail_oauth.status(),
+        return jsonify(**config_store.masked_status(), gmail_app=gmail_smtp.status(),
                        api_archive=service.tracking_payload_info(),
                        employee={"name": config_store.get("SUPPORT_STAFF_NAME"),
                                  "email": config_store.get("SUPPORT_NOTIFY_EMAIL")})
@@ -148,63 +147,56 @@ def create_app(testing: bool = False) -> Flask:
                        employee={"name": config_store.get("SUPPORT_STAFF_NAME"),
                                  "email": config_store.get("SUPPORT_NOTIFY_EMAIL")})
 
-    @web.post("/api/config/google")
-    def config_google():
+    @web.post("/api/config/gmail-app")
+    def gmail_app_save():
         data = request.get_json(silent=True) or {}
+        email = data.get("email", "")
+        password = data.get("app_password", "")
+        if not isinstance(email, str) or not isinstance(password, str):
+            return jsonify(error="Nieprawidłowe dane konfiguracji Gmail."), 400
+        email = email.strip().lower()
+        if email and not gmail_smtp.MAIL_RE.fullmatch(email):
+            return jsonify(error="Nieprawidłowy adres Gmail."), 400
         try:
-            changed = config_store.update({
-                "GOOGLE_OAUTH_CLIENT_ID": data.get("client_id", ""),
-                "GOOGLE_OAUTH_CLIENT_SECRET": data.get("client_secret", ""),
-            })
-            if changed:
-                service.audit("user", "google_client_config_updated",
-                              description="Zmodyfikowano OAuth Google: " + ", ".join(changed))
+            password = gmail_smtp.normalize_password(password) if password.strip() else ""
+        except gmail_smtp.GmailConfigError as exc:
+            return jsonify(error=str(exc)), 400
+        current_email, current_password = gmail_smtp.credentials()
+        if email and email != current_email and not password:
+            return jsonify(error="Zmiana adresu nadawcy wymaga nowego hasła aplikacji."), 400
+        updates = {}
+        if email and email != current_email:
+            updates["GMAIL_SMTP_EMAIL"] = email
+        if password and password != current_password:
+            updates["GMAIL_SMTP_APP_PASSWORD"] = password
+        if updates and not (email or current_email):
+            return jsonify(error="Najpierw podaj adres Gmail."), 400
+        try:
+            changed = config_store.update(updates) if updates else []
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
-        return jsonify(saved=True, changed=changed, **config_store.masked_status(),
-                       gmail=gmail_oauth.status())
+        if changed:
+            service.audit("user", "gmail_app_config_updated",
+                          description="Zmieniono konfigurację nadawcy Gmail App Password.")
+        return jsonify(saved=bool(changed), changed=changed,
+                       gmail_app=gmail_smtp.status())
 
-    @web.post("/api/config/gmail/start")
-    def gmail_start():
+    @web.post("/api/config/gmail-app/check")
+    def gmail_app_check():
         try:
-            url, state = gmail_oauth.authorization_url()
-        except gmail_oauth.GoogleConfigError as exc:
+            result = gmail_smtp.check_login()
+        except gmail_smtp.GmailConfigError as exc:
             return jsonify(error=str(exc)), 422
-        session["gmail_oauth_state"] = state
-        session["gmail_oauth_started"] = int(time.time())
-        return jsonify(url=url)
-
-    @web.get("/api/config/gmail/callback")
-    def gmail_callback():
-        state = session.pop("gmail_oauth_state", None)
-        started = session.pop("gmail_oauth_started", None)
-        supplied = request.args.get("state", "")
-        if (not state or not started or time.time() - started > 600
-                or not secrets.compare_digest(state, supplied)):
-            abort(403, "Nieprawidłowy lub wygasły stan autoryzacji Google.")
-        if request.args.get("error"):
-            return redirect("/?config=gmail-denied")
-        if not request.args.get("code"):
-            abort(400, "Brak kodu OAuth Google.")
-        try:
-            # Rebuild the trusted HTTPS callback URL: Cloudflare Tunnel may
-            # connect to Gunicorn using HTTP internally.
-            authorization_response = gmail_oauth.redirect_uri() + "?" + urlencode({
-                "state": supplied, "code": request.args["code"][:2048]
-            })
-            gmail_oauth.complete(authorization_response, state)
-            service.audit("user", "gmail_oauth_connected",
-                          description="Połączono konto Gmail przez OAuth.")
-        except gmail_oauth.GoogleConfigError:
-            return redirect("/?config=gmail-failed")
-        return redirect("/?config=gmail-connected")
-
-    @web.post("/api/config/gmail/disconnect")
-    def gmail_disconnect():
-        gmail_oauth.disconnect()
-        service.audit("user", "gmail_oauth_disconnected",
-                      description="Usunięto lokalny token Gmail.")
-        return jsonify(disconnected=True, gmail=gmail_oauth.status())
+        except Exception as exc:
+            # Do not return or log SMTP exception text: it can contain account
+            # information, authentication data, or remote server banners.
+            service.audit("system", "gmail_app_login_failed",
+                          description="Weryfikacja Gmail SMTP: " + type(exc).__name__)
+            return jsonify(error="Logowanie Gmail SMTP nie powiodło się. "
+                           "Sprawdź 2FA, hasło aplikacji i politykę Google Workspace."), 502
+        service.audit("user", "gmail_app_verified",
+                      description="Gmail SMTP: logowanie zweryfikowano bez wysyłania wiadomości.")
+        return jsonify(**result)
 
     @web.get("/api/shipments")
     def shipments():
@@ -273,7 +265,7 @@ def create_app(testing: bool = False) -> Flask:
             result = support_mail.send_support(tracking.upper())
             return jsonify(result), 200
         except support_mail.SupportNotConfigured as exc:
-            return jsonify(error=str(exc), code="GMAIL_OAUTH_REQUIRED"), 503
+            return jsonify(error=str(exc), code="GMAIL_APP_PASSWORD_REQUIRED"), 503
         except support_mail.SupportIneligible as exc:
             return jsonify(error=str(exc), code="INELIGIBLE"), 422
         except support_mail.SupportAlreadySent as exc:

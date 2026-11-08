@@ -44,7 +44,7 @@ const EXTRA_COLUMNS = [
   ["ups.event_code", "Kod ostatniego zdarzenia", "package.activity[0].status.code"],
   ["ups.event_status_code", "Kod skanu ostatniego zdarzenia", "package.activity[0].status.statusCode"],
   ["ups.activity_description", "Opis ostatniego skanu", "package.activity[0].status.description"],
-  ["ups.activity_date", "Data ostatniego skanu", "package.activity[0].date"],
+  ["ups.activity_date", "Ostatni skan", "package.activity[0].date"],
   ["ups.activity_time", "Godzina ostatniego skanu", "package.activity[0].time"],
   ["ups.delivery_date_type", "Rodzaj terminu doręczenia", "package.deliveryDate[0].type"],
   ["ups.delivery_time_type", "Rodzaj przedziału doręczenia", "package.deliveryTime.type"],
@@ -61,7 +61,7 @@ const EXTRA_COLUMNS = [
   ["ups.width", "Szerokość paczki", "package.dimension.width"],
   ["ups.height", "Wysokość paczki", "package.dimension.height"],
   ["ups.dimension_unit", "Jednostka wymiarów", "package.dimension.unitOfDimension"],
-  ["ups.activity_gmt_date", "Data ostatniego skanu UTC", "package.activity[0].gmtDate"],
+  ["ups.activity_gmt_date", "Ostatni skan (UTC)", "package.activity[0].gmtDate"],
   ["ups.activity_gmt_time", "Godzina ostatniego skanu UTC", "package.activity[0].gmtTime"],
   ["ups.activity_gmt_offset", "Przesunięcie strefy skanu", "package.activity[0].gmtOffset"],
   ["ups.activity_country", "Kraj ostatniego skanu", "package.activity[0].destCountryCode"],
@@ -85,8 +85,8 @@ const EXTRA_COLUMNS = [
 ];
 const COLUMN_KEYS = [...BASE_COLUMNS, ...EXTRA_COLUMNS.map(([key]) => key)];
 const columnLabels = {
-  fba: "Shipment ID", tracking: "Numer UPS", ship_date: "Data nadania",
-  delivery_date: "Data doręczenia", transit_days: "W transporcie",
+  fba: "Shipment ID", tracking: "Numer UPS", ship_date: "Nadanie",
+  delivery_date: "Doręczenie", transit_days: "W transporcie",
   weight: "Waga", ups_status: "Status UPS",
   document: "Dokument", pod_preview: "Podgląd POD"
 };
@@ -591,6 +591,17 @@ function notice(message, isError = false) {
   el.classList.toggle("error", isError);
 }
 
+function formatUpsDate(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "—";
+  const matches = /^(\d{4})-?(\d{2})-?(\d{2})$/.exec(raw);
+  if (!matches) return raw;
+  const year = +matches[1], month = +matches[2], day = +matches[3];
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() + 1 !== month
+      || parsed.getUTCDate() !== day) return "—";
+  return matches[1] + "-" + matches[2] + "-" + matches[3];
+}
 function addCell(tr, text, className = "") {
   const cell = document.createElement("td");
   if (className) cell.className = className;
@@ -853,7 +864,7 @@ function renderRows() {
       const sent = document.createElement("span");
       sent.className = "status ready support-sent";
       sent.textContent = "E-mail wysłany";
-      sent.title = "Serwer SMTP przyjął wiadomość. UPS nie potwierdził jeszcze jej odbioru.";
+      sent.title = "Wiadomość zaakceptowana przez Gmail SMTP. Nie potwierdza to jeszcze jej odbioru przez UPS.";
       doc.append(sent);
     } else if (row.support_eligible && ["pending", "uncertain"].includes(row.support_status)) {
       const pending = document.createElement("span");
@@ -870,7 +881,7 @@ function renderRows() {
         + "i ewentualną korektę doręczenia dla " + row.tracking);
       support.title = supportConfigured
         ? "Wyślij prośbę do UPS o weryfikację doręczenia i aktualizację trackingu"
-        : "Połącz konto Gmail przez OAuth2 w Konfiguracji";
+        : "Skonfiguruj Gmail i hasło aplikacji w Konfiguracji";
       support.dataset.tracking = row.tracking;
       support.addEventListener("click", () => void sendUpsSupport(row, support));
       doc.append(support);
@@ -927,8 +938,10 @@ function renderRows() {
     }
     tr.append(podCell);
     for (const [key, label] of EXTRA_COLUMNS) {
-      const value = (row.ups_extra || {})[key] || "—";
-      const cell = addCell(tr, value, "extra-cell");
+      const raw = (row.ups_extra || {})[key];
+      const isDate = ["ups.pickup_date", "ups.activity_date"].includes(key);
+      const value = isDate ? formatUpsDate(raw) : (raw || "—");
+      const cell = addCell(tr, value, "extra-cell" + (isDate ? " ship-date" : ""));
       cell.title = label + ": " + value;
     }
     tr.append(statusCell);
@@ -1520,7 +1533,7 @@ async function sendUpsSupport(row, button) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: "{}",
     });
-    tableNotice("Gmail API przyjęło wiadomość dla " + row.tracking
+    tableNotice("Gmail SMTP przyjęło wiadomość dla " + row.tracking
       + " skierowaną do " + result.recipient + ". Odbiór przez UPS nie jest jeszcze potwierdzony.");
     await refresh();
   } catch (error) {
@@ -1676,27 +1689,28 @@ async function refreshConfiguration() {
       + " · błędy oczekujące na ponowienie: " + (archive.error ?? "—");
     $("employee-full-name").value = config.employee?.name || "";
     $("employee-email").value = config.employee?.email || "";
-    const google = config.gmail || {};
-    const connected = google.configured === true;
-    $("gmail-config-indicator").textContent = connected
-      ? "Połączono OAuth2" : google.oauth_ready ? "Gotowy do połączenia"
-      : "Brak klienta OAuth2";
-    $("gmail-config-indicator").classList.toggle("configured", connected);
-    $("gmail-connected-info").hidden = !connected;
-    $("gmail-connected-info").textContent = connected
-      ? "Nadawca Gmail: " + google.email + " · Zakres: gmail.send (wyłącznie wysyłanie)" : "";
-    $("gmail-connect").disabled = !google.oauth_ready;
-    $("gmail-connect").textContent = connected
-      ? "Połącz ponownie / zmień konto" : "Połącz Gmail przez Google";
-    $("gmail-disconnect").hidden = !connected;
-    $("gmail-oauth-help").textContent = connected
-      ? "Gmail API aktywny. Wiadomości UPS można wysyłać ręcznie, a powiadomienia "
-        + "do pracownika automatycznie po podaniu jego adresu e-mail."
-      : google.oauth_ready
-      ? "Kliknij «Połącz Gmail przez Google» i zezwól wyłącznie na wysyłanie e-maili."
-      : "Brak zarejestrowanego klienta OAuth2 Gmail API po stronie aplikacji. "
-        + "Google wymaga klienta OAuth z własnej lub zarządzanej aplikacji. "
-        + "Sam kod biblioteki nie zastępuje rejestracji klienta.";
+    const gmail = config.gmail_app || {};
+    currentGmailEmail = gmail.email || "";
+    $("gmail-config-indicator").textContent = gmail.verified
+      ? "Logowanie zweryfikowane" : gmail.configured
+      ? "Zapisano · sprawdź logowanie" : "Brak konfiguracji";
+    $("gmail-config-indicator").classList.toggle("configured", gmail.verified === true);
+    // Never overwrite fields while the operator is typing: the config GET may
+    // finish after the user has already entered the credentials.
+    if (!gmailInputDirty) {
+      $("gmail-app-email").value = "";
+      $("gmail-app-password").value = "";
+    }
+    $("gmail-app-email").placeholder = currentGmailEmail || "np. powiadomienia@electrosmart.pl";
+    $("gmail-app-note").textContent = gmail.verified
+      ? "Weryfikacja SMTP zakończona powodzeniem: " + currentGmailEmail
+        + ". Zgłoszenia UPS są ręczne, powiadomienia do pracownika automatyczne."
+      : gmail.configured
+      ? "Dane zapisano dla " + currentGmailEmail
+        + ". Kliknij «Sprawdź logowanie»; nie wyśle to wiadomości."
+      : "Wprowadź adres Gmail i 16-znakowe hasło aplikacji Google.";
+    $("gmail-app-check").disabled = !gmail.configured;
+    updateGmailSaveButton();
   } catch (error) {
     configNotice("Błąd odczytu konfiguracji: " + error.message, true);
   }
@@ -1735,40 +1749,56 @@ $("employee-config-form").addEventListener("submit", async (event) => {
   } catch (error) { configNotice(error.message, true); }
   finally { save.disabled = false; }
 });
-$("gmail-connect").addEventListener("click", async () => {
-  const button = $("gmail-connect");
+let currentGmailEmail = "";
+let gmailInputDirty = false;
+function updateGmailSaveButton() {
+  const typedEmail = $("gmail-app-email").value.trim().toLowerCase();
+  const email = typedEmail || currentGmailEmail;
+  const pass = $("gmail-app-password").value.replace(/\s+/g, "");
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  $("gmail-app-save").disabled = !validEmail || !/^[A-Za-z0-9]{16}$/.test(pass);
+}
+for (const id of ["gmail-app-email", "gmail-app-password"]) {
+  $(id).addEventListener("input", () => {
+    gmailInputDirty = true;
+    updateGmailSaveButton();
+  });
+}
+$("gmail-app-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("gmail-app-save");
+  if (button.disabled) return;
   button.disabled = true;
   try {
-    const result = await requestJson("/api/config/gmail/start", { method: "POST" });
-    const url = new URL(result.url);
-    if (url.protocol !== "https:" || url.hostname !== "accounts.google.com")
-      throw new Error("Nieprawidłowy adres autoryzacji Google.");
-    window.location.assign(url.href);
-  } catch (error) {
-    configNotice("Nie można rozpocząć OAuth: " + error.message, true);
-    button.disabled = false;
-  }
-});
-$("gmail-disconnect").addEventListener("click", async () => {
-  const button = $("gmail-disconnect");
-  button.disabled = true;
-  try {
-    await requestJson("/api/config/gmail/disconnect", { method: "POST" });
-    configNotice("Lokalny dostęp Gmail odłączony. Uprawnienia można również cofnąć w Google.");
+    const result = await requestJson("/api/config/gmail-app", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        email: $("gmail-app-email").value.trim(),
+        app_password: $("gmail-app-password").value.trim(),
+      }),
+    });
+    configNotice(result.changed?.length
+      ? "Dane Gmail zapisano. Kliknij «Sprawdź logowanie», aby włączyć wysyłkę."
+      : "Nie zmieniono danych Gmail.",
+      result.changed?.length ? "success" : "warning");
+    gmailInputDirty = false;
     await refreshConfiguration();
   } catch (error) {
     configNotice(error.message, true);
-  } finally { button.disabled = false; }
+  } finally {
+    updateGmailSaveButton();
+  }
 });
-const oauthResult = new URLSearchParams(window.location.search).get("config");
-if (oauthResult) {
-  $("tab-config").click();
-  const notes = {
-    "gmail-connected": "Konto Gmail pomyślnie połączone.",
-    "gmail-denied": "Logowanie Google zostało anulowane.",
-    "gmail-failed": "Autoryzacja Gmail nie powiodła się. Sprawdź konfigurację klienta OAuth2 na serwerze.",
-  };
-  configNotice(notes[oauthResult] || "Powrót z autoryzacji Google.",
-    oauthResult !== "gmail-connected");
-  window.history.replaceState({}, "", window.location.pathname);
-}
+$("gmail-app-check").addEventListener("click", async () => {
+  const button = $("gmail-app-check");
+  button.disabled = true;
+  try {
+    await requestJson("/api/config/gmail-app/check", {method: "POST"});
+    configNotice("Gmail SMTP: logowanie poprawne. Nie wysłano wiadomości testowej.");
+    await refreshConfiguration();
+  } catch (error) {
+    configNotice("Błąd logowania Gmail: " + error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});

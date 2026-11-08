@@ -21,6 +21,8 @@ KEYS = {
     "UPS_CLIENT_SECRET": "UPS Client Secret",
     "GOOGLE_OAUTH_CLIENT_ID": "Google OAuth Client ID",
     "GOOGLE_OAUTH_CLIENT_SECRET": "Google OAuth Client Secret",
+    "GMAIL_SMTP_EMAIL": "Gmail sender",
+    "GMAIL_SMTP_APP_PASSWORD": "Gmail App Password",
     "SUPPORT_STAFF_NAME": "Imię i nazwisko pracownika",
     "SUPPORT_NOTIFY_EMAIL": "E-mail do powiadomień",
 }
@@ -77,8 +79,6 @@ def masked_status() -> dict:
     return {
         "ups_client_id": masked(ups_credentials()[0], identifier=True),
         "ups_client_secret": masked(ups_credentials()[1]),
-        "google_client_id": masked(get("GOOGLE_OAUTH_CLIENT_ID"), identifier=True),
-        "google_client_secret": masked(get("GOOGLE_OAUTH_CLIENT_SECRET")),
     }
 
 

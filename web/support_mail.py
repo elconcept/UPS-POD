@@ -1,6 +1,4 @@
-"""One-click UPS delivery inquiry through Gmail API OAuth2 (gmail.send only).
-
-OAuth flow: google-auth-oauthlib (Google's maintained Python library).
+"""One-click UPS delivery inquiry via Gmail SMTP with an App Password.
 Never infers a delivery, never sends without operator click, and never retries
 an unacknowledged send automatically.
 """
@@ -14,7 +12,7 @@ from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
 import config_store
-import gmail_oauth
+import gmail_smtp
 import service
 
 OFFICIAL_CONTACT = "customer.service@ups.com"
@@ -38,7 +36,7 @@ class SupportSendUncertain(RuntimeError):
 
 
 def configured() -> bool:
-    return bool(gmail_oauth.status()["configured"])
+    return gmail_smtp.verified()
 
 
 def grace_expired(row: dict) -> bool:
@@ -87,11 +85,11 @@ def eligible(row: dict) -> bool:
 def send_support(tracking: str) -> dict:
     if not service.NUMBER.fullmatch(tracking):
         raise SupportIneligible("Nieprawidłowy numer UPS.")
-    google = gmail_oauth.status()
-    if not google["configured"]:
+    gmail = gmail_smtp.status()
+    if not gmail["verified"]:
         raise SupportNotConfigured(
-            "Połącz konto Gmail przez OAuth2 w Konfiguracji. "
-            "Aplikacja potrzebuje zgody wyłącznie na gmail.send."
+            "Zapisz adres Gmail i hasło aplikacji, następnie użyj "
+            "«Sprawdź logowanie» w Konfiguracji."
         )
 
     with service.connection() as db:
@@ -118,7 +116,7 @@ def send_support(tracking: str) -> dict:
 
     reference = "<" + uuid.uuid4().hex + "@ups-pod.local>"
     msg = EmailMessage()
-    msg["From"] = google["email"]
+    msg["From"] = gmail["email"]
     msg["To"] = OFFICIAL_CONTACT
     msg["Subject"] = "Request to investigate missing UPS delivery scan – " + tracking
     msg["Message-ID"] = reference
@@ -142,7 +140,7 @@ def send_support(tracking: str) -> dict:
                        or "UPS-POD shipment administration") + "\n"
     )
     try:
-        result = gmail_oauth.send(msg)
+        result = gmail_smtp.send(msg)
     except Exception as exc:
         # A timeout can occur after Gmail accepts the message. No blind retry.
         with service.connection() as db:
@@ -151,7 +149,7 @@ def send_support(tracking: str) -> dict:
         service.audit("system", "ups_support_send_uncertain", tracking,
                       description=type(exc).__name__)
         raise SupportSendUncertain(
-            "Gmail API nie potwierdziło wysyłki. Sprawdź folder Wysłane "
+            "Gmail SMTP nie potwierdziło wysyłki. Sprawdź folder Wysłane "
             "zanim wyślesz kolejne zgłoszenie."
         ) from exc
 
@@ -162,6 +160,6 @@ def send_support(tracking: str) -> dict:
             (service.utcnow(), str(result.get("id") or reference), tracking),
         )
     service.audit("user", "ups_support_sent", tracking,
-                  description="Zgłoszenie przesłano przez Gmail API OAuth2.")
+                  description="Zgłoszenie przesłano przez Gmail SMTP / App Password.")
     return {"sent": True, "tracking": tracking, "recipient": OFFICIAL_CONTACT,
-            "message_id": str(result.get("id") or reference), "channel": "gmail_oauth"}
+            "message_id": str(result.get("id") or reference), "channel": "gmail_smtp"}

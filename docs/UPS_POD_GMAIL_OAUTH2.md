@@ -1,3 +1,5 @@
+> **Archiwalne (nieaktualne od 8.11.2026).** UPS-POD korzysta obecnie z Gmail SMTP i hasła aplikacji, a nie z Gmail API OAuth2. Obowiązujące instrukcje: [UPS_POD_GMAIL_APP_PASSWORD_20261108.md](UPS_POD_GMAIL_APP_PASSWORD_20261108.md).
+
 # Gmail OAuth2 w UPS-POD — wymagania i stan
 
 Stan po rewizji v9 (2026-11-08): w kodzie aplikacji jedyną aktywną

@@ -73,17 +73,33 @@
           <h3>Gmail — nadawca zgłoszeń UPS</h3>
           <span id="gmail-config-indicator" class="config-chip">Sprawdzanie…</span>
         </div>
-        <p class="config-help">Połącz Gmail przez Google OAuth 2.0. Aplikacja prosi
-          wyłącznie o uprawnienie <code>gmail.send</code> oraz identyfikację nadawcy.
-          Nie uzyskuje dostępu do skrzynki, odczytu wiadomości ani usuwania poczty.
-          Hasło Gmail i hasło aplikacji nie są wymagane.</p>
-        <div class="gmail-oauth-actions">
-          <button id="gmail-connect" type="button" disabled>Połącz Gmail przez Google</button>
-          <button id="gmail-disconnect" type="button" class="secondary" hidden>Odłącz Gmail</button>
-        </div>
-        <div id="gmail-connected-info" class="gmail-connected-info" role="status" hidden></div>
-        <p id="gmail-oauth-help" class="field-help" role="status">
-          Sprawdzanie dostępności autoryzacji Google…
+        <p class="config-help">Wysyłka przez <strong>Gmail SMTP (SSL/TLS, port 465)</strong>
+          z osobnym 16-znakowym hasłem aplikacji Google. Nie podawaj zwykłego hasła konta.
+          Konto musi mieć włączoną weryfikację dwuetapową (2FA). Google Workspace może
+          ograniczać dostępność haseł aplikacji.</p>
+        <p class="field-help">Hasło aplikacji utworzysz w
+          <a href="https://myaccount.google.com/apppasswords" target="_blank"
+             rel="noopener noreferrer">ustawieniach konta Google</a>.
+          Hasło przechowujemy wyłącznie w chronionym pliku konfiguracji NAS;
+          nie jest zwracane do przeglądarki.</p>
+        <form id="gmail-app-form" autocomplete="off">
+          <label for="gmail-app-email">Adres e-mail nadawcy Gmail / Google Workspace</label>
+          <input id="gmail-app-email" type="email" maxlength="254"
+            autocomplete="off" spellcheck="false"
+            placeholder="np. powiadomienia@electrosmart.pl">
+          <label for="gmail-app-password">Hasło aplikacji Google (16 znaków)</label>
+          <input id="gmail-app-password" type="password" maxlength="32"
+            autocomplete="new-password" spellcheck="false"
+            placeholder="xxxx xxxx xxxx xxxx">
+          <div class="config-actions">
+            <button id="gmail-app-save" type="submit" disabled>Zapisz Gmail</button>
+            <button id="gmail-app-check" type="button" class="secondary" disabled>
+              Sprawdź logowanie
+            </button>
+          </div>
+        </form>
+        <p id="gmail-app-note" class="field-help" role="status">
+          Nie skonfigurowano Gmail SMTP.
         </p>
         <form id="employee-config-form" class="employee-config-form" autocomplete="on">
           <h4>Osoba odpowiedzialna za przesyłki</h4>
@@ -218,7 +234,7 @@
     <div class="table-wrap">
       <table id="shipments-table">
         <thead><tr>
-          <th class="selection-header" scope="col" aria-label="Zaznacz przesyłki"><input type="checkbox" id="select-page" title="Zaznacz widoczne przesyłki" aria-label="Zaznacz wszystkie przesyłki na stronie"></th><th class="api-fixed-header" title="Stan UPS API" scope="col">API</th><th>Shipment ID</th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>W transporcie</th><th>Waga</th><th>Status UPS</th><th>Dokument</th><th>Podgląd POD</th>
+          <th class="selection-header" scope="col" aria-label="Zaznacz przesyłki"><input type="checkbox" id="select-page" title="Zaznacz widoczne przesyłki" aria-label="Zaznacz wszystkie przesyłki na stronie"></th><th class="api-fixed-header" title="Stan UPS API" scope="col">API</th><th>Shipment ID</th><th>Numer UPS</th><th>Nadanie</th><th>Doręczenie</th><th>W transporcie</th><th>Waga</th><th>Status UPS</th><th>Dokument</th><th>Podgląd POD</th>
         </tr></thead>
         <tbody id="rows"><tr><td colspan="11" class="empty">Ładowanie przesyłek…</td></tr></tbody>
       </table>

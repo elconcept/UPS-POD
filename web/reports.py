@@ -14,8 +14,8 @@ import service
 COLUMNS = [
     ("Shipment ID", "shipment_id", 22),
     ("Numer UPS", "tracking", 26),
-    ("Data nadania", "ship_date", 16),
-    ("Data doręczenia", "delivery_date", 18),
+    ("Nadanie", "ship_date", 16),
+    ("Doręczenie", "delivery_date", 18),
     ("W transporcie", "transit_days", 16),
     ("Typ daty", "delivery_date_type", 12),
     ("Waga", "weight", 14),
