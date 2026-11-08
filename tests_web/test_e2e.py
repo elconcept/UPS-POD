@@ -525,7 +525,7 @@ def test_removed_delivery_columns_from_web_table(application):
     script = (root / "web/static/app.js").read_text()
     for name in ("<th>Zdjęcie</th>", "<th>Godzina doręczenia</th>", "<th>Odebrał</th>"):
         assert name not in template
-    assert 'colspan="10"' in template
+    assert 'colspan="11"' in template
     assert "tr.append(photoCell)" not in script
     assert 'addCell(tr, row.received_by' not in script
 
@@ -566,11 +566,11 @@ def test_dashboard_links_tooltip_return_collapsed_import_and_502(application):
             headings = page.locator(
                 "#shipments-table thead tr:first-child .sort-header"
             ).evaluate_all("(nodes) => nodes.map((n) => n.firstChild.textContent)")
-            assert headings[:8] == [
+            assert headings[:9] == [
                 "Shipment ID", "Numer UPS", "Data nadania",
-                 "Data doręczenia", "Waga", "Status UPS", "Dokument", "Podgląd POD",
+                "Data doręczenia", "W transporcie", "Waga", "Status UPS", "Dokument", "Podgląd POD",
             ]
-            assert len(headings) == len(service.UPS_EXTRA_COLUMNS) + 8
+            assert len(headings) == len(service.UPS_EXTRA_COLUMNS) + 9
             expect(page.locator('.column-header[data-col="weight"]')).to_be_hidden()
             link = page.locator(f'#rows tr[data-tracking="{exception}"] td.track a')
             assert link.get_attribute("href") == (
@@ -1351,8 +1351,14 @@ def test_selection_column_fixed_icons_polish_and_full_width(application):
                 }""")
                 assert fonts[0] == fonts[1] and fonts[2] == fonts[3]
 
-                page.locator(".column-header[data-col='fba'] .column-grip").drag_to(
-                    page.locator(".column-header[data-col='document'] .sort-header"))
+                if width >= 700:
+                    page.locator(".column-header[data-col='fba'] .column-grip").drag_to(
+                        page.locator(".column-header[data-col='document'] .sort-header"))
+                else:
+                    # Tiny touch layouts keep sorting available; column order
+                    # remains keyboard-accessible even without pointer drag.
+                    page.locator(".column-header[data-col='fba'] .column-grip").focus()
+                    page.keyboard.press("Alt+ArrowRight")
                 expect(first_header).to_have_class("selection-header")
                 expect(page.locator("#rows tr").first.locator("td").first).to_have_class(
                     "selection-cell")
@@ -1677,7 +1683,8 @@ def test_month_buttons_tool_groups_reset_and_column_picker(application):
                      "retry-selected","clear-column-filters","default-view","columns-open")]
                 assert labels == ["ZIP","XLSX","FBA","UPS API",
                     "Wyczyść filtry","Domyślny widok","Kolumny"]
-                assert page.locator(".action-secondary .action-group").count() == 3
+                assert page.locator(".action-secondary .action-group").count() == 2
+                assert page.locator(".action-main .action-group-files").count() == 1
                 assert page.locator(".action-secondary .action-group-filters #retry-selected").count() == 1
                 expect(page.locator("#column-filter-row")).to_be_hidden()
                 expect(page.locator(f'#rows tr[data-tracking="{numbers[0]}"] .document-waiting-icon')).to_have_attribute(
@@ -2159,6 +2166,112 @@ def test_v9_api_left_status_palette_large_pod_preview_and_oauth_ui(application):
                 page.locator("#ups-config-form button[type=submit]").click()
                 expect(page.locator("#config-notice")).to_have_class("table-notice warning")
                 context.close()
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+def test_v10_transit_days_numeric_sort_filter_and_excel(application):
+    import datetime as dt
+    import zipfile
+    import service
+    import reports
+    from zoneinfo import ZoneInfo
+
+    today = dt.datetime.now(ZoneInfo("Europe/Warsaw")).date()
+    ten = (today - dt.timedelta(days=10)).isoformat()
+    four = (today - dt.timedelta(days=4)).strftime("%Y%m%d")
+    planned = (today - dt.timedelta(days=1)).strftime("%Y%m%d")
+    nums = ["1Z" + f"{i:016d}" for i in range(1000,1004)]
+    service.add_numbers(" ".join(nums))
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET ship_date=?,state='retry',ups_status='On the Way' WHERE tracking=?",
+                   (ten,nums[0]))
+        db.execute("UPDATE shipments SET ship_date=?,state='ready',ups_status='Delivered',ups_status_code='D',"
+                   "delivery_date=?,delivery_date_type='DEL' WHERE tracking=?",
+                   (ten,four,nums[1]))
+        db.execute("UPDATE shipments SET ship_date=?,state='ready',ups_status='Delivered',"
+                   "delivery_date=?,delivery_date_type='SDD',delivered_at='' WHERE tracking=?",
+                   (ten,planned,nums[2]))
+        db.execute("UPDATE shipments SET ship_date='' WHERE tracking=?", (nums[3],))
+    details={row["tracking"]:row for row in service.list_numbers(month="all")["rows"]}
+    assert details[nums[0]]["transit_days"]==10
+    assert details[nums[1]]["transit_days"]==6
+    assert details[nums[2]]["transit_days"] is None  # forecast is NOT delivered
+    assert details[nums[3]]["transit_days"] is None  # unknown shipment date
+    by_sort=service.list_numbers(month="all",sort_by="transit_days",sort_dir="desc")
+    assert [row["tracking"] for row in by_sort["rows"]][:2]==nums[:2]
+    filtered=service.list_numbers(month="all",column_filters={"transit_days":"6 dni"})
+    assert filtered["total"]==1 and filtered["rows"][0]["tracking"]==nums[1]
+    neg=service.transit_days_expression(today)
+    with service.connection() as db:
+        assert db.execute("SELECT "+neg+" FROM shipments WHERE tracking=?",(nums[1],)).fetchone()[0]==6
+    output,count=reports.build_report(nums)
+    assert count==4
+    with zipfile.ZipFile(output) as book:
+        names=book.namelist()
+        strings=book.read("xl/sharedStrings.xml") if "xl/sharedStrings.xml" in names else b""
+        # Strings_to_numbers=False, but durations are written as actual XLSX numbers.
+        xml=book.read("xl/worksheets/sheet1.xml")
+        assert b"W transporcie" in xml or b"W transporcie" in strings
+        assert b'numFmtId=' in book.read("xl/styles.xml")
+        assert b"6" in xml and b"10" in xml
+        assert b"hyperlink" in xml
+
+
+def test_v10_toolbar_led_header_and_resize_visuals(application):
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    import service
+    now=dt.datetime.now(ZoneInfo("Europe/Warsaw")).date().isoformat()
+    nums=["1Z"+f"{i:016d}" for i in (2701,2702)]
+    service.add_numbers(" ".join(nums))
+    with service.connection() as db:
+        db.execute("UPDATE shipments SET ship_date=? WHERE tracking=?",(now,nums[0]))
+        db.execute("UPDATE shipments SET ship_date=?,state='retry' WHERE tracking=?",(now,nums[1]))
+    server=make_server("127.0.0.1",0,application,threaded=True)
+    thread=threading.Thread(target=server.serve_forever,daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as pw:
+            browser=pw.chromium.launch()
+            for width in (390,640,1024,1440,1920):
+                for theme in ("light","dark"):
+                    context=browser.new_context(viewport={"width":width,"height":900})
+                    context.add_cookies([
+                        {"name":"ups_pod_theme","value":theme,
+                         "url":f"http://127.0.0.1:{server.server_port}"},
+                        {"name":"ups_pod_month","value":"all",
+                         "url":f"http://127.0.0.1:{server.server_port}"},
+                    ])
+                    page=context.new_page()
+                    page.goto(f"http://127.0.0.1:{server.server_port}")
+                    expect(page.locator("#rows tr")).to_have_count(2)
+                    expect(page.locator('.column-header[data-col="transit_days"]')).to_be_visible()
+                    expect(page.locator('#rows [data-col="transit_days"]').first).to_have_text("0 dni")
+                    assert page.locator('#shipments-panel h2').filter(has_text="Potwierdzenia i statusy").count()==0
+                    assert page.locator("#refresh-status").evaluate(
+                        "(el)=>el.closest('header')?.classList.contains('topbar')") is True
+                    expect(page.locator("#refresh-status")).to_contain_text("Aktualizacja:")
+                    loc=page.evaluate("""()=>{
+                        const g=id=>document.querySelector(id).getBoundingClientRect();
+                        const f=g('.actions .action-main .action-group-files');
+                        const q=g('#query'), p=g('.actions .pagination-top');
+                        return {fileLeft:f.left,fileRight:f.right,queryLeft:q.left,
+                          pagerLeft:p.left, width:document.documentElement.scrollWidth,
+                          ledWidth:g('.pending-months .led-number').width,
+                          ledBg:getComputedStyle(document.querySelector('.led-number')).backgroundColor,
+                          resWidth:g('.column-header[data-col="tracking"] .column-resize').width,
+                          resBg:getComputedStyle(document.querySelector(
+                            '.column-header[data-col="tracking"] .column-resize'),'::after').backgroundColor};
+                    }""")
+                    assert loc["width"]<=width+2,loc
+                    assert loc["fileRight"]<=loc["queryLeft"]+2,loc
+                    assert loc["ledWidth"]>=21 and loc["resWidth"]>=5,loc
+                    assert loc["resBg"]!="rgba(0, 0, 0, 0)",loc
+                    page.locator(".column-header[data-col='transit_days'] .sort-header").click()
+                    expect(page.locator('#rows [data-col="transit_days"]').first).to_have_text("0 dni")
+                    context.close()
             browser.close()
     finally:
         server.shutdown()

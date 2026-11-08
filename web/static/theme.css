@@ -858,3 +858,277 @@ button.stat-action{transition:background-color .1s}
   background:#354253!important;color:#c2cfdf!important;
   border-color:#516276!important
 }
+
+/* V10: centred compact refresh clock in the global header. */
+.topbar{
+  display:grid!important;
+  grid-template-columns:minmax(240px,1fr) auto minmax(325px,1fr)!important;
+  grid-template-areas:"brand refreshed nav"!important;
+  column-gap:16px!important;row-gap:7px!important;
+  align-items:center!important
+}
+.topbar>div:first-child{grid-area:brand;min-width:0}
+.topbar .header-refresh{
+  grid-area:refreshed;display:inline-flex;align-items:center;
+  justify-self:center;gap:6px;max-width:100%;
+  font-size:10px!important;line-height:1.25!important;font-weight:600;
+  color:var(--ui-muted);white-space:nowrap;letter-spacing:.01em
+}
+.topbar .header-refresh::before{
+  content:"";display:inline-block;width:5px;height:5px;border-radius:50%;
+  background:#38a58f;flex:none
+}
+.topbar .topbar-controls{grid-area:nav;justify-self:end}
+@media(max-width:1150px){
+  .topbar{
+    grid-template-columns:minmax(190px,1fr) auto!important;
+    grid-template-areas:"brand nav" "refreshed refreshed"!important
+  }
+  .topbar .header-refresh{justify-self:center}
+}
+@media(max-width:620px){
+  .topbar{
+    grid-template-columns:minmax(0,1fr)!important;
+    grid-template-areas:"brand" "nav" "refreshed"!important
+  }
+  .topbar .topbar-controls{justify-self:stretch;justify-content:space-between;
+    width:100%}
+  .topbar .header-refresh{justify-self:center}
+}
+
+/* V10: actions ZIP/XLSX/FBA immediately LEFT of omnisearch.
+   A spacious divider separates paging from the remaining operations. */
+.actions{
+  display:grid!important;
+  grid-template-areas:"main" "tools"!important;
+  grid-template-columns:minmax(0,1fr)!important;
+  align-items:center!important;gap:9px!important
+}
+.actions .action-main{
+  grid-area:main!important;
+  display:flex!important;align-items:center!important;flex-wrap:nowrap!important;
+  gap:8px!important;min-width:0!important;width:100%!important
+}
+.actions .action-main .action-group-files{
+  order:1;flex:0 0 auto!important;gap:4px!important;
+  margin-left:clamp(7px,1.3vw,22px)!important;
+  padding-left:clamp(10px,1.3vw,19px)!important;
+  border-left:2px solid var(--ui-border)!important
+}
+.actions .action-main #query{
+  order:2;flex:1 1 145px!important;width:auto!important;
+  min-width:58px!important;max-width:none!important
+}
+.actions .action-secondary{
+  grid-area:tools!important;
+  display:flex!important;align-items:center!important;
+  flex:0 1 auto!important;flex-wrap:nowrap!important;
+  gap:9px!important;width:auto!important;min-width:0!important;
+  max-width:100%!important;justify-content:flex-start!important;
+  overflow:visible!important
+}
+.actions .action-secondary .pagination-top{
+  position:static!important;grid-area:auto!important;
+  order:0;display:flex!important;flex:0 0 auto!important;
+  align-items:center!important;gap:8px!important;
+  min-width:0!important;margin:0 clamp(10px,1.5vw,24px) 0 0!important;
+  padding:0 clamp(12px,1.5vw,22px) 0 0!important;
+  border:0!important;border-right:2px solid var(--ui-border)!important;
+  white-space:nowrap!important
+}
+.actions .action-secondary .action-group-filters{order:1;flex:0 1 auto!important}
+.actions .action-secondary .action-pipe{order:2;flex:0 0 auto}
+.actions .action-secondary .action-group-settings{
+  order:3;flex:0 1 auto!important;margin-left:0!important
+}
+.actions .pagination-top #page-info-top{
+  display:none!important; /* full record and page count remains in the lower pager */
+}
+.actions .pagination-top label{display:inline!important;font-size:10px}
+.actions .action-group button{min-height:28px}
+@media(min-width:1850px){
+  .actions{
+    grid-template-areas:"main tools"!important;
+    grid-template-columns:minmax(0,1fr) auto!important;
+    gap:14px!important
+  }
+  .actions .action-main .action-group-files{margin-left:10px!important;padding-left:10px!important}
+  .actions .action-main #query{min-width:105px!important}
+  .actions .action-secondary .pagination-top{
+    margin-right:13px!important;padding-right:14px!important
+  }
+}
+@media(max-width:1050px){
+  .actions .action-secondary{gap:5px!important;width:100%!important;
+    justify-content:flex-start!important}
+  .actions .action-secondary .pagination-top{
+    gap:4px!important;margin-right:9px!important;padding-right:9px!important
+  }
+}
+@media(max-width:650px){
+  .actions .action-main{
+    display:grid!important;align-items:center!important;
+    grid-template-columns:minmax(0,max-content) minmax(0,1fr)!important;
+    grid-template-areas:"scope month" "files search"!important;
+    gap:7px!important
+  }
+  .actions .action-main .filters{grid-area:scope!important}
+  .actions .action-main .month-control{grid-area:month!important}
+  .actions .action-main .action-group-files{
+    grid-area:files!important;justify-self:start;
+    margin-left:0!important;padding-left:0!important;border-left:0!important
+  }
+  .actions .action-main #query{
+    grid-area:search!important;width:100%!important;
+    min-width:0!important
+  }
+  .actions .action-secondary{
+    gap:3px!important;justify-content:space-between!important;
+    overflow:hidden!important
+  }
+  .actions .action-secondary .pagination-top{
+    margin-right:4px!important;padding-right:6px!important;
+    border-right-width:1px!important
+  }
+  .actions .pagination-top label{display:none!important}
+  .actions .pagination-top select{max-width:55px!important}
+  .actions .pagination-top button{
+    font-size:0!important;min-width:26px;min-height:28px!important;
+    padding:4px 3px!important;line-height:1!important
+  }
+  .actions .pagination-top #prev-page-top::before{
+    content:"←";font-size:13px!important
+  }
+  .actions .pagination-top #next-page-top::before{
+    content:"→";font-size:13px!important
+  }
+  .actions .action-group button{min-width:0!important}
+}
+@media(max-width:390px){
+  .actions .action-secondary{gap:1px!important}
+  .actions .action-secondary .pagination-top{
+    gap:2px!important;margin-right:2px!important;padding-right:4px!important
+  }
+  .actions .action-main .action-group-files{gap:2px!important}
+  .actions .action-main .action-group-files button{padding-left:2px!important;
+    padding-right:2px!important}
+}
+
+/* V10: headers have persistent high-contrast resize rails in both themes.
+   16px pointer target remains usable even in the ultra-dense column mode. */
+#shipments-table thead .column-header{position:relative!important;
+  padding-right:17px!important}
+#shipments-table thead .column-resize,
+#shipments-table.table-ultra-dense thead .column-resize{
+  position:absolute!important;top:0!important;right:0!important;
+  width:16px!important;min-width:16px!important;height:100%!important;
+  touch-action:none!important;cursor:col-resize!important;
+  border-right:0!important;background:transparent
+}
+#shipments-table thead .column-resize::after{
+  content:"";position:absolute;right:5px;top:13%;bottom:13%;
+  width:2px;border-radius:2px;
+  background:#8a9db2;box-shadow:0 0 0 1px #edf3f733
+}
+:root[data-theme="dark"] #shipments-table thead .column-resize::after{
+  background:#8faac4;box-shadow:0 0 0 1px #131f303b
+}
+#shipments-table thead .column-resize:hover,
+#shipments-table thead .column-resize:focus-visible,
+#shipments-table thead .resizing-column .column-resize{
+  background:var(--ui-focus)!important;outline-offset:-1px!important
+}
+#shipments-table thead .column-resize:hover::after,
+#shipments-table thead .column-resize:focus-visible::after,
+#shipments-table thead .resizing-column .column-resize::after{
+  background:var(--ui-accent);width:3px;box-shadow:0 0 0 1px var(--ui-focus)
+}
+
+/* Month statistics: compact LED-style illuminated numeric indicators.
+   Real text remains in the DOM, making digits selectable and accessible. */
+.pending-months button.month-count{
+  gap:4px!important;min-height:30px!important;padding:3px 4px!important;
+  justify-content:space-between!important
+}
+.pending-months button.month-count .led-number{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important;
+  font-variant-numeric:tabular-nums!important;
+  font-feature-settings:"tnum" 1;
+  font-size:13px!important;font-weight:900!important;letter-spacing:.04em!important;
+  min-width:24px;text-align:center;padding:3px 5px!important;
+  background:#0e2d39!important;color:#75f5d6!important;
+  border:1px solid #225569!important;border-radius:5px!important;
+  text-shadow:0 0 3px #24fbcb,0 0 8px #24fbcb77!important;
+  box-shadow:inset 0 0 8px #04131888,0 1px 1px #0002!important
+}
+.pending-months button.month-count:not(.nonzero) .led-number{
+  color:#93b8bd!important;text-shadow:0 0 2px #65b2af44!important;
+  background:#182c37!important
+}
+:root[data-theme="dark"] .pending-months button.month-count .led-number{
+  background:#061c24!important;color:#68f9d9!important;
+  border-color:#245e68!important
+}
+@media(max-width:560px){
+  .pending-months button.month-count{gap:3px!important}
+  .pending-months button.month-count .led-number{
+    padding:3px 4px!important;font-size:12px!important;min-width:21px
+  }
+}
+
+/* Time-in-transit is a compact number, visually consistent with all dates. */
+#shipments-table .transit-days{
+  font:600 12px/1.35 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace!important;
+  font-variant-numeric:tabular-nums;white-space:nowrap
+}
+
+/* V10 refinement: the pager must size to its contents instead of consuming
+   the entire toolbar row inherited from legacy mobile layouts. */
+.actions .action-secondary .pagination-top{
+  width:max-content!important;max-width:fit-content!important;
+  justify-content:flex-start!important
+}
+/* Resize hit-area scales down on very narrow columns to preserve clickable
+   sort buttons and native DnD targets on high-density/mobile grids. */
+#shipments-table thead .column-resize,
+#shipments-table.table-ultra-dense thead .column-resize{
+  width:min(14px,25%)!important;min-width:4px!important
+}
+#shipments-table .sort-header,
+#shipments-table.table-dense .sort-header,
+#shipments-table.table-ultra-dense .sort-header{
+  max-width:calc(100% - 10px)!important;
+  min-width:4px!important;overflow:hidden!important;text-overflow:ellipsis
+}
+
+/* Keep drag grips independently clickable. Long status headers can no longer
+   overlap or swallow the drag target when many columns are enabled. */
+#shipments-table thead th.column-header .column-grip,
+#shipments-table.table-ultra-dense thead th.column-header .column-grip{
+  position:absolute!important;top:50%!important;
+  right:clamp(6px,25%,16px)!important;transform:translateY(-50%);
+  z-index:4!important;
+  display:inline-flex!important;align-items:center;justify-content:center;
+  width:10px!important;min-width:10px!important;max-width:10px!important;
+  height:22px!important;min-height:22px!important;
+  margin:0!important;padding:0!important;
+  border-radius:3px!important;font-size:14px!important;
+  line-height:1!important;overflow:visible!important
+}
+#shipments-table thead th.column-header .column-resize{z-index:5}
+#shipments-table thead th.column-header .sort-header{
+  position:relative;z-index:1;
+  max-width:calc(100% - 25px)!important;
+}
+
+/* Mobile dense view reserves direct taps for sorting and resize rails.
+   Reordering remains available through keyboard Alt+Arrow and on desktop
+   with mouse drag-and-drop; wide enough touch layouts retain pointer drag. */
+@media(max-width:700px){
+  #shipments-table thead th.column-header .column-grip{
+    pointer-events:none!important
+  }
+  #shipments-table thead th.column-header .sort-header{
+    z-index:6!important
+  }
+}

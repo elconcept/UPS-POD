@@ -16,6 +16,7 @@ COLUMNS = [
     ("Numer UPS", "tracking", 26),
     ("Data nadania", "ship_date", 16),
     ("Data doręczenia", "delivery_date", 18),
+    ("W transporcie", "transit_days", 16),
     ("Typ daty", "delivery_date_type", 12),
     ("Waga", "weight", 14),
     ("Status UPS", "ups_status_pl", 31),
@@ -49,12 +50,14 @@ def _rows(trackings: list[str]) -> list[dict]:
         raise ValueError("Nieprawidłowe numery przesyłek.")
     trackings = list(dict.fromkeys(trackings))
     found = {}
+    duration_sql = service.transit_days_expression()
     with service.connection() as db:
         for start in range(0, len(trackings), 400):
             batch = trackings[start:start + 400]
             q = ",".join("?" for _ in batch)
             for row in db.execute(
                 f"""SELECT tracking,shipment_id,ship_date,delivery_date,
+                      {duration_sql} AS transit_days,
                       delivery_date_type,weight_value,weight_unit,ups_status,
                       ups_status_code,ups_status_detail,state FROM shipments
                       WHERE tracking IN ({q})""", batch,
@@ -87,6 +90,7 @@ def build_report(trackings: list[str]) -> tuple[io.BytesIO, int]:
                               "valign": "vcenter"})
     text = book.add_format({"font_size": 10, "valign": "vcenter"})
     dateformat = book.add_format({"font_size": 10, "num_format": "yyyy-mm-dd"})
+    durationformat = book.add_format({"font_size": 10, "num_format": '0 "dni"'})
     urlformat = book.add_format({"font_size": 10, "font_color": "#17649C",
                                  "underline": True})
     green = book.add_format({"font_color": "#14774F", "bg_color": "#E7F5ED"})
@@ -120,6 +124,7 @@ def build_report(trackings: list[str]) -> tuple[io.BytesIO, int]:
         values = [
             item["shipment_id"] or "Nieprzypisany", item["tracking"],
             _date(item["ship_date"]), _date(item["delivery_date"]),
+            item["transit_days"],
             item["delivery_date_type"] or "—",
             (weight + " " + unit).strip() or "—",
             status, item["ups_detail_pl"], STATE_LABELS.get(state, state),
@@ -127,11 +132,17 @@ def build_report(trackings: list[str]) -> tuple[io.BytesIO, int]:
             "Śledź w UPS",
         ]
         for j, val in enumerate(values):
-            if j == 10:
+            field = COLUMNS[j][1]
+            if field == "link":
                 ws.write_url(i, j, url, urlformat, "Śledź w UPS")
+            elif field == "transit_days":
+                if isinstance(val, int):
+                    ws.write_number(i, j, val, durationformat)
+                else:
+                    ws.write_string(i, j, "—", text)
             elif isinstance(val, dt.date):
                 ws.write_datetime(i, j, val, dateformat)
-            elif j == 8:
+            elif field == "state":
                 ws.write_string(i, j, str(val), green if state == "ready" else amber)
             else:
                 ws.write_string(i, j, str(val), text)

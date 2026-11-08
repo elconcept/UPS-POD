@@ -29,7 +29,8 @@ const PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000, 1500, 2000];
 const priorPageSize = Number(getCookie("ups_pod_page_size"));
 let pageSize = PAGE_SIZE_OPTIONS.includes(priorPageSize) ? priorPageSize : 1500;
 const BASE_COLUMNS = [
-  "fba", "tracking", "ship_date", "delivery_date", "weight", "ups_status", "document", "pod_preview"
+  "fba", "tracking", "ship_date", "delivery_date", "transit_days", "weight",
+  "ups_status", "document", "pod_preview"
 ];
 // Allowlisted UPS Tracking API paths; values are extracted server-side without
 // returning raw addresses, personal identities, signature, photo or POD data.
@@ -85,14 +86,15 @@ const EXTRA_COLUMNS = [
 const COLUMN_KEYS = [...BASE_COLUMNS, ...EXTRA_COLUMNS.map(([key]) => key)];
 const columnLabels = {
   fba: "Shipment ID", tracking: "Numer UPS", ship_date: "Data nadania",
-  delivery_date: "Data doręczenia", weight: "Waga", ups_status: "Status UPS",
+  delivery_date: "Data doręczenia", transit_days: "W transporcie",
+  weight: "Waga", ups_status: "Status UPS",
   document: "Dokument", pod_preview: "Podgląd POD"
 };
 for (const [key, label] of EXTRA_COLUMNS) columnLabels[key] = label;
 const DEFAULT_VISIBLE = BASE_COLUMNS.filter((key) => key !== "weight");
 const DEFAULT_WIDTHS = {
   fba: 215, tracking: 178, ship_date: 119, delivery_date: 146,
-  weight: 95, ups_status: 156, document: 114, pod_preview: 82
+  transit_days: 120, weight: 95, ups_status: 156, document: 114, pod_preview: 82
 };
 for (const [key] of EXTRA_COLUMNS) DEFAULT_WIDTHS[key] = 144;
 function validKeys(value) {
@@ -113,6 +115,13 @@ const normalizedVisible = Array.isArray(priorVisible)
 let visibleColumns = new Set(validKeys(normalizedVisible)
   ? (priorVisible.includes("queue") ? [...normalizedVisible, "pod_preview"] : normalizedVisible)
   : DEFAULT_VISIBLE);
+// One-time migration: existing users receive the newly default-visible column
+// without resetting their other visibility, order or width preferences.
+if (getCookie("ups_pod_column_schema") !== "10") {
+  visibleColumns.add("transit_days");
+  saveCookie("ups_pod_columns_visible", JSON.stringify([...visibleColumns]));
+  saveCookie("ups_pod_column_schema", "10");
+}
 const savedWidths = readJsonCookie("ups_pod_column_widths");
 let columnWidths = { ...DEFAULT_WIDTHS };
 if (savedWidths && typeof savedWidths === "object") {
@@ -155,7 +164,7 @@ const SELECT_COLUMN_WIDTH = 44;
 const API_COLUMN_WIDTH = 46;
 const COLUMN_GROW = {
   fba: 2.0, tracking: 2.0, ship_date: 0.9, delivery_date: 1.0,
-  weight: 0.7, ups_status: 0.9, queue: 0.12, document: 0.5
+  transit_days: 0.75, weight: 0.7, ups_status: 0.9, queue: 0.12, document: 0.5
 };
 // Column widths are implemented with <colgroup>. A drag changes ~24 <col>
 // nodes and headers, never thousands of <td> nodes; no more hover stuttering.
@@ -207,6 +216,7 @@ function autoFitColumnWidths() {
     const header = $("shipments-table").tHead.rows[0].querySelector('[data-col="' + key + '"]');
     const base = key === "pod_preview" ? 75 : key === "document" ? 100
       : key === "ship_date" || key === "delivery_date" ? 102
+      : key === "transit_days" ? 116
       : key === "fba" ? 143 : key === "tracking" ? 167 : 62;
     let width = Math.max(base, context.measureText(columnLabels[key]).width + 38);
     for (let i = 0; i < rowNodes.length; i++) {
@@ -766,6 +776,13 @@ function renderRows() {
       : row.delivery_date_type === "SDD" ? "Planowana data dostawy (SDD)"
       : row.delivery_date_type || "Brak informacji";
 
+    const duration = Number.isInteger(row.transit_days) && row.transit_days >= 0
+      ? row.transit_days + " dni" : "—";
+    const transit = addCell(tr, duration, "transit-days");
+    transit.title = row.state === "ready" || row.ups_status_code === "D"
+      ? "Liczba dni od daty nadania do faktycznego doręczenia (bez planowanych dat)"
+      : "Liczba dni od daty nadania do dzisiejszej daty w Polsce";
+
     const weightLabel = row.weight_value
       ? row.weight_value + " " + (row.weight_unit === "KGS" ? "kg"
         : row.weight_unit === "LBS" ? "lb" : row.weight_unit) : "—";
@@ -1095,6 +1112,7 @@ async function refresh() {
           month:"short", year:"2-digit"
         }).format(new Date(item.key + "-01T12:00:00"));
         const value = document.createElement("strong");
+        value.className = "led-number";
         button.append(label, value);
         months.append(button);
       }

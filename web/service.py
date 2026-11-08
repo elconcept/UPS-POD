@@ -442,12 +442,38 @@ UPS_EXTRA_COLUMNS = {
     "ups.return_eligible": ("Możliwość zwrotu UPS", "package.preAuthorizedReturnInfo.returnEligibilityIndicator"),
 }
 
+def transit_days_expression(today: dt.date | None = None) -> str:
+    """Numeric days in transit in the Warsaw business calendar.
+
+    Open packages: today minus the actual UPS pickup date. Delivered packages:
+    actual DEL date (not an SDD/RDD forecast) or recorded delivered_at;
+    missing or invalid dates yield SQL NULL, never a fabricated duration.
+    The only interpolated value is a locally generated ISO date.
+    """
+    day = (today or dt.datetime.now(ZoneInfo("Europe/Warsaw")).date()).isoformat()
+    delivered = ("(state='ready' OR ups_status_code='D' OR "
+                 "LOWER(ups_status) IN ('delivered','doręczono'))")
+    scanned = ("CASE WHEN delivery_date_type='DEL' AND "
+               "delivery_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' "
+               "THEN SUBSTR(delivery_date,1,4)||'-'||"
+               "SUBSTR(delivery_date,5,2)||'-'||SUBSTR(delivery_date,7,2) "
+               "WHEN delivered_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' "
+               "THEN SUBSTR(delivered_at,1,10) ELSE NULL END")
+    end = f"CASE WHEN {delivered} THEN ({scanned}) ELSE '{day}' END"
+    delta = f"JULIANDAY(({end}))-JULIANDAY(ship_date)"
+    return ("CASE WHEN ship_date GLOB "
+            "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
+            f"AND ({delta}) >= 0 THEN CAST(({delta}) AS INTEGER) ELSE NULL END")
+
+
 # Client-visible fields are explicitly mapped to fixed SQL expressions.
 # Never interpolate user-supplied names or directions into SQL.
 LIST_COLUMNS = {
     "fba": "COALESCE(NULLIF(shipment_id,''),'Nieprzypisany')",
     "tracking": "tracking",
     "ship_date": "COALESCE(NULLIF(ship_date,''),'—')",
+    # Transit expression depends on Warsaw-local today: supplied at query time.
+    "transit_days": "NULL",
     "delivery_date": "CASE WHEN LENGTH(delivery_date)=8 THEN "
         "SUBSTR(delivery_date,1,4)||'-'||SUBSTR(delivery_date,5,2)||'-'||"
         "SUBSTR(delivery_date,7,2) ELSE '—' END",
@@ -490,11 +516,16 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 1500,
     """Page, filter and sort the complete SQLite dataset, not just the visible page."""
     limit = max(1, min(limit, 2000))
     offset = max(0, offset)
-    if sort_by not in SORT_COLUMNS or sort_dir not in {"asc", "desc"}:
+    duration_expr = transit_days_expression()
+    filter_sql = {**LIST_COLUMNS, "transit_days": (
+        f"CASE WHEN ({duration_expr}) IS NULL THEN '—' "
+        f"ELSE CAST(({duration_expr}) AS TEXT)||' dni' END")}
+    sort_sql = {**SORT_COLUMNS, "transit_days": duration_expr}
+    if sort_by not in sort_sql or sort_dir not in {"asc", "desc"}:
         raise ValueError("Nieprawidłowe sortowanie.")
     if column_filters is not None and (
         not isinstance(column_filters, dict)
-        or set(column_filters).difference(LIST_COLUMNS)
+        or set(column_filters).difference(filter_sql)
         or any(not isinstance(v, str) or len(v) > 100 for v in column_filters.values())
     ):
         raise ValueError("Nieprawidłowe filtry kolumn.")
@@ -529,10 +560,10 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 1500,
     for column, value in (column_filters or {}).items():
         text = value.strip()
         if text:
-            where.append(f"INSTR(LOWER({LIST_COLUMNS[column]}), LOWER(?)) > 0")
+            where.append(f"INSTR(LOWER({filter_sql[column]}), LOWER(?)) > 0")
             params.append(text)
     condition = " AND ".join(where)
-    order_field = SORT_COLUMNS[sort_by]
+    order_field = sort_sql[sort_by]
     order = (f"({order_field} IS NULL OR CAST({order_field} AS TEXT)='') ASC, "
              f"{order_field} {sort_dir.upper()}, created_at DESC, tracking ASC")
     with connection() as db:
@@ -542,6 +573,7 @@ def list_numbers(search: str = "", scope: str = "all", limit: int = 1500,
             "last_attempt_at,next_attempt_at,delivered_at,pod_path,shipment_id,ship_date,"
             "ship_date_source,ups_status,ups_status_code,weight_value,weight_unit,"
             "delivery_time_type,delivery_time_start,delivery_time_end,delivery_date,"
+            f"{duration_expr} AS transit_days,"
              "delivery_date_type,received_by,photo_filename,ups_status_detail,"
             "ups_event_code,ups_tracking_code,tracking_extras,"
             "(SELECT sc.status FROM support_cases AS sc "

@@ -19,6 +19,9 @@
       <h1><a class="brand-home" href="/" title="Strona główna i lista przesyłek">ElectroSmart <span>UPS-POD</span></a></h1>
       <p>Automatyczne pobieranie i archiwizacja potwierdzeń dostawy przesyłek międzynarodowych.</p>
     </div>
+    <span class="refresh header-refresh" id="refresh-status"
+          title="Godzina ostatniej próby synchronizacji listy"
+          aria-label="Ostatnia aktualizacja listy przesyłek">Aktualizacja: —</span>
     <div class="topbar-controls">
       <nav class="view-tabs" aria-label="Widoki aplikacji" role="tablist">
         <button class="view-tab active" id="tab-shipments" type="button" role="tab" aria-selected="true" aria-controls="shipments-panel">Przesyłki</button>
@@ -151,10 +154,6 @@
     </div>
   </section>
   <section class="panel">
-    <div class="section-head">
-      <div><h2>Potwierdzenia i statusy</h2><p>Lista jest zapisana w SQLite i aktualizowana automatycznie. Najedź na status, aby przeczytać szczegóły po polsku.</p></div>
-      <span class="refresh" id="refresh-status">Odświeżanie co 7 s</span>
-    </div>
     <p id="table-notice" class="table-notice" role="status" aria-live="polite" hidden></p>
     <div class="actions">
       <div class="action-main">
@@ -165,9 +164,6 @@
       </div>
       <div class="month-control"><label class="month-label" for="month-filter">Miesiąc</label>
       <select id="month-filter" aria-label="Miesiąc nadania"><option value="all">Wszystkie miesiące</option></select></div>
-      <input type="search" id="query" placeholder="SZUKAJ..." aria-label="Szukaj przesyłek" />
-      </div>
-      <div class="action-secondary" role="group" aria-label="Narzędzia tabeli">
         <div class="action-group action-group-files" role="group" aria-label="Dokumenty i FBA">
           <button type="button" id="download-selected" class="secondary action-tint-zip"
             title="Pobierz gotowe POD jako ZIP"><span class="action-icon" aria-hidden="true">
@@ -185,7 +181,21 @@
               <path d="M7 14V9a3 3 0 0 1 6 0v5m-6-2h6M4 18c4 3 10 3 15-1M17 16l2 1-1 2"/></svg>
             </span><span class="button-label">FBA</span></button>
         </div>
-        <span class="action-pipe" aria-hidden="true">│</span>
+      <input type="search" id="query" placeholder="SZUKAJ..." aria-label="Szukaj przesyłek" />
+      </div>
+      <div class="action-secondary" role="group" aria-label="Narzędzia tabeli">
+    <nav class="pagination pagination-top" aria-label="Paginacja nad tabelą">
+      <span id="page-info-top">—</span>
+      <div class="page-controls">
+        <label for="page-size-top">Na stronę</label>
+        <select id="page-size-top" aria-label="Liczba przesyłek na stronę">
+          <option>50</option><option>100</option><option>200</option><option>500</option>
+          <option>1000</option><option selected>1500</option><option>2000</option>
+        </select>
+        <button class="secondary" type="button" id="prev-page-top">← Poprzednia</button>
+        <button class="secondary" type="button" id="next-page-top">Następna →</button>
+      </div>
+    </nav>
         <div class="action-group action-group-filters" role="group" aria-label="Operacje i filtry">
           <button type="button" id="retry-selected" class="secondary"
             title="Ponów sprawdzenie wybranych przesyłek przez UPS API"><span class="button-label">PONÓW API</span></button>
@@ -203,25 +213,14 @@
             aria-controls="columns-dialog" title="Wybierz widoczne kolumny"><span class="button-label">Kolumny</span></button>
         </div>
       </div>
-    <nav class="pagination pagination-top" aria-label="Paginacja nad tabelą">
-      <span id="page-info-top">—</span>
-      <div class="page-controls">
-        <label for="page-size-top">Na stronę</label>
-        <select id="page-size-top" aria-label="Liczba przesyłek na stronę">
-          <option>50</option><option>100</option><option>200</option><option>500</option>
-          <option>1000</option><option selected>1500</option><option>2000</option>
-        </select>
-        <button class="secondary" type="button" id="prev-page-top">← Poprzednia</button>
-        <button class="secondary" type="button" id="next-page-top">Następna →</button>
-      </div>
-    </nav>
+
     </div>
     <div class="table-wrap">
       <table id="shipments-table">
         <thead><tr>
-          <th class="selection-header" scope="col" aria-label="Zaznacz przesyłki"><input type="checkbox" id="select-page" title="Zaznacz widoczne przesyłki" aria-label="Zaznacz wszystkie przesyłki na stronie"></th><th class="api-fixed-header" title="Stan UPS API" scope="col">API</th><th>Shipment ID</th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>Waga</th><th>Status UPS</th><th>Dokument</th><th>Podgląd POD</th>
+          <th class="selection-header" scope="col" aria-label="Zaznacz przesyłki"><input type="checkbox" id="select-page" title="Zaznacz widoczne przesyłki" aria-label="Zaznacz wszystkie przesyłki na stronie"></th><th class="api-fixed-header" title="Stan UPS API" scope="col">API</th><th>Shipment ID</th><th>Numer UPS</th><th>Data nadania</th><th>Data doręczenia</th><th>W transporcie</th><th>Waga</th><th>Status UPS</th><th>Dokument</th><th>Podgląd POD</th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="10" class="empty">Ładowanie przesyłek…</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="11" class="empty">Ładowanie przesyłek…</td></tr></tbody>
       </table>
     </div>
     <nav class="pagination pagination-bottom" aria-label="Paginacja pod tabelą">
